@@ -1,0 +1,72 @@
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_region_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS Parameters
+    odom_frame: odom # 里程计坐标系
+    map_frame: map # 地图坐标系
+    base_frame: base_footprint # 机器人基座坐标系
+    scan_topic: /scan # 订阅的激光雷达数据话题
+    mode: mapping # 运行模式，mapping为建图，localization为纯定位模式
+
+    # if you'd like to immediately start continuing a map at a given pose
+    # or just default to starting at the origin
+    #map_file_name: test_steve # 定位模式下加载的已有地图文件路径
+    #map_start_pose: [0.0, 0.0, 0.0] # 充电座启动时的固定坐标
+
+    debug_logging: false # 是否开启调试日志
+    throttle_scans: 1 # 降采样接收到的激光雷达扫描数据，如设为2则每收到两次处理一次
+    transform_publish_period: 0.02 # Publish 50Hz TF，发布 map 到 odom 坐标变换的周期(秒)
+    map_update_interval: 1.0 # 加快地图更新频率，发布地图更新显示的周期(秒)
+    resolution: 0.05 # 地图分辨率，即每个像素代表0.05米
+    minimum_laser_range: 0.20 # 基于 RPLIDAR A2M8 规格书，最小有效测距 0.2m，避免扫到自身结构
+    max_laser_range: 12.0 # 基于 RPLIDAR A2M8 规格书，最大有效测距 12.0m，超出直接忽略
+    minimum_time_interval: 0.1 # 允许更高频的数据处理（雷达是10Hz），两次处理激光雷达扫描间的最小时间间隔(秒)
+    transform_timeout: 0.2 # 坐标变换查找的超时时间(秒)
+    tf_buffer_duration: 30.0 # TF 缓冲区的保留时间(秒)
+    stack_capacity_to_concurrently_process: 5 # 处理队列的大小，出现 Queue is full 时可调大
+    stack_size_to_use: 40000 # 建图用到的内存栈大小限制
+
+    # General Parameters
+    use_scan_matching: true # 是否使用激光扫描匹配以优化里程计，true能提高精度
+    use_scan_barycenter: true # 扫描匹配中是否使用扫描重心计算
+    minimum_travel_distance: 0.5 # 恢复到适合完整底盘建图的正常阈值，移动超过这么多米才处理新的一帧扫描
+    minimum_travel_heading: 0.5 # 恢复到适合完整底盘旋转建图的正常阈值，旋转超过这么多弧度才处理新的一帧扫描
+    scan_buffer_size: 10 # 缓存的激光扫描帧数，用于回环检测
+    scan_buffer_maximum_scan_distance: 12.0 # 缓存中激光扫描的最大距离
+    link_match_minimum_response_fine: 0.1 # 建立相邻节点连接时的最小匹配响应值
+    link_scan_maximum_distance: 1.5 # 连接节点时激光扫描数据之间的最大距离
+    loop_search_maximum_distance: 3.0 # 回环检测的最大搜索距离(米)
+    do_loop_closing: true # 是否开启闭环检测，消除建图累积误差
+    loop_match_minimum_chain_size: 10 # 确认闭环前必须匹配的最小扫描链长度
+    loop_match_maximum_variance_coarse: 3.0 # 粗略闭环匹配的最大方差
+    loop_match_minimum_response_coarse: 0.35 # 粗略闭环匹配的最小响应值
+    loop_match_minimum_response_fine: 0.45 # 精细闭环匹配的最小响应值
+
+    # Correlation Parameters - Correlation Parameters
+    correlation_search_space_dimension: 0.5 # 恢复正常搜索窗口大小，信任底盘里程计。里程计不准时可增大
+    correlation_search_space_resolution: 0.01 # 搜索空间的分辨率
+    correlation_search_space_smear_deviation: 0.1 # 搜索空间的模糊偏差
+
+    # Correlation Parameters - Loop Closure Parameters
+    loop_search_space_dimension: 8.0 # 闭环检测的搜索窗口大小
+    loop_search_space_resolution: 0.05 # 闭环检测搜索空间的分辨率
+    loop_search_space_smear_deviation: 0.03 # 闭环检测搜索空间的模糊偏差
+
+    # Scan Matcher Parameters
+    distance_variance_penalty: 0.5 # 闭环检测中对位移方差的惩罚
+    angle_variance_penalty: 1.0 # 闭环检测中对角度方差的惩罚
+
+    fine_search_angle_offset: 0.00349 # 精细搜索的角度范围(弧度)
+    coarse_search_angle_offset: 0.349 # 粗略搜索的角度范围(弧度)
+    coarse_angle_resolution: 0.0349 # 粗略搜索的角度分辨率(弧度)
+    minimum_angle_penalty: 0.9 # 相关性匹配计算的角度偏差惩罚系数
+    minimum_distance_penalty: 0.5 # 相关性匹配计算的位移偏差惩罚系数
+    use_response_expansion: true # 在匹配中增加一倍的分辨率来寻找响应峰值

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WS_DIR="${WS_DIR:-$HOME/ros2_ws}"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+BUILD_TYPE="${BUILD_TYPE:-Release}"
+
+source_ros_setup() {
+  set +u
+  source "$1"
+  set -u
+}
+
+echo "[ylhb] Building on Jetson"
+echo "[ylhb] Workspace: ${WS_DIR}"
+
+cd "${WS_DIR}"
+source_ros_setup "/opt/ros/${ROS_DISTRO}/setup.bash"
+
+colcon build \
+  --symlink-install \
+  --cmake-args -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+
+echo "[ylhb] Build finished. Run: source ${WS_DIR}/install/setup.bash"

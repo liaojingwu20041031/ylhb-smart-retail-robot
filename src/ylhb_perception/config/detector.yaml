@@ -1,0 +1,84 @@
+yolo_detector_node:
+  ros__parameters:
+    # ZED 2i 的彩色图像话题。当前已按本机 ros2 topic list 的实际输出设置。
+    image_topic: /zed/zed_node/rgb/color/rect/image
+
+    # YOLO 检测结果输出。C++ TensorRT 节点保持和旧 Python 节点一致的 JSON 字符串格式。
+    detections_topic: /perception/detections
+
+    # 可选 ROS2 带框调试图像。默认不发布；本机看效果优先用 show_debug_window。
+    debug_image_topic: /perception/debug_image
+
+    # 模型路径。模型统一放在 ylhb_perception 包内，避免散落到其它目录。
+    # 默认运行 Jetson 本机由 ONNX 编译出的 TensorRT FP16 engine。
+    # 源模型：~/ros2_ws/src/ylhb_perception/models/yolo26.pt
+    # 中间模型：~/ros2_ws/src/ylhb_perception/models/yolo26.onnx
+    # 推理模型：~/ros2_ws/src/ylhb_perception/models/yolo26.engine
+    model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+
+    # 后端名称，主要用于日志标识；C++ 节点实际直接用 TensorRT Runtime 加载 .engine。
+    backend: tensorrt
+
+    # 置信度阈值，越高越保守，漏检可能增加。
+    confidence_threshold: 0.35
+
+    # NMS IOU 阈值，控制重叠框合并。
+    iou_threshold: 0.45
+
+    # 是否发布带框调试图像。默认关闭，避免 plot() 和图像发布拖慢实时检测。
+    publish_debug_image: false
+
+    # 是否用本地 OpenCV 窗口显示带框调试图。调试时推荐打开这个，而不是走 ROS2/Foxglove 图像链路。
+    show_debug_window: false
+    debug_window_name: YOLO26 TensorRT Debug
+    debug_window_max_hz: 15.0
+
+    # CUDA 设备。Jetson 单 GPU 通常使用 cuda:0；若临时 CPU 测试可设为 cpu。
+    device: cuda:0
+
+    # YOLO 输入推理尺寸。必须和 TensorRT engine 输入尺寸一致。
+    imgsz: 960
+
+    # 单帧最多保留多少个检测框。
+    max_det: 20
+
+    # 半精度推理。Orin Nano 支持 FP16 Tensor Core，比赛部署默认开启。
+    half: true
+
+    # 每隔多少秒打印一次 FPS、推理耗时和检测摘要。默认 2 秒，便于调试且不刷屏。
+    log_interval_sec: 2.0
+
+    # 调试图最高发布频率。避免 publish_debug_image=true 时大图经 DDS/Foxglove 拖慢推理主循环。
+    # 设为 0 表示每个处理帧都发布，适合临时排查 rqt/Foxglove 是否正常刷新。
+    debug_image_max_hz: 5.0
+
+    # 比赛实时推理必须使用 TensorRT engine。若误传 .pt/.onnx，节点会拒绝加载。
+    require_tensorrt: true
+
+    # 可选类别名。未配置时 class_name 直接输出 class_id 字符串，避免 C++ 节点猜错训练集标签。
+    # 如果上层逻辑依赖类别名，按 class_id 顺序取消注释并填写，例如：
+    # class_names: ["red_block", "blue_block", "target"]
+
+object_localizer_node:
+  ros__parameters:
+    # 来自 yolo_detector_node 的 2D 检测结果。
+    detections_topic: /perception/detections
+
+    # ZED 2i 深度图话题，用于把 2D 框中心点估算成相机坐标系 3D 点。
+    depth_topic: /zed/zed_node/depth/depth_registered
+
+    # ZED 2i 相机内参话题，计算 3D 坐标时需要 fx/fy/cx/cy。
+    camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
+
+    # 默认发布第一个有效目标的位置。
+    target_pose_topic: /perception/target_pose
+
+    # 所有带 3D 坐标的目标 JSON 输出。
+    localized_objects_topic: /perception/localized_objects
+
+    # 目标位姿所在坐标系。需要和 ZED wrapper 实际 frame 保持一致。
+    camera_frame: zed_left_camera_frame_optical
+
+    # 深度过滤范围，超出范围的检测不发布 3D 坐标。
+    max_depth_m: 8.0
+    min_depth_m: 0.2

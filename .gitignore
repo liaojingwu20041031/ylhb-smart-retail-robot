@@ -1,0 +1,36 @@
+# ROS 2 / colcon build outputs
+build/
+install/
+log/
+
+# Local agent and editor state
+.codex
+.agents/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Large model artifacts
+*.engine
+*.onnx
+*.pt
+*.pth
+*.weights
+
+# Runtime logs and dumps
+*.log
+core
+core.*

@@ -1,0 +1,285 @@
+import json
+import os
+import signal
+import subprocess
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+
+def latched_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+class ManagedProcess:
+    def __init__(self, name: str, command: str) -> None:
+        self.name = name
+        self.command = command
+        self.process: Optional[subprocess.Popen] = None
+        self.last_message = ''
+
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+
+class SystemSupervisorNode(Node):
+    def __init__(self) -> None:
+        super().__init__('system_supervisor_node')
+        self.declare_parameter('system_command_topic', '/retail_ai/system_command')
+        self.declare_parameter('system_status_topic', '/retail_ai/system_status')
+        self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('workspace_dir', '/home/nvidia/ros2_ws')
+        self.declare_parameter('ros_distro', 'humble')
+        self.declare_parameter('map_output_dir', '/home/nvidia/ros2_ws/src/maps')
+        self.declare_parameter('default_navigation_map', '/home/nvidia/ros2_ws/src/my_map.yaml')
+        self.declare_parameter('perception_model_path', '/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine')
+
+        self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
+        self.ros_distro = str(self.get_parameter('ros_distro').value)
+        self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
+        self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
+        self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
+        self.lock = threading.Lock()
+        self.last_command = ''
+        self.last_success = True
+        self.last_message = 'system supervisor ready'
+
+        self.processes: Dict[str, ManagedProcess] = {
+            'bringup': ManagedProcess('bringup', 'ros2 launch ylhb_base bringup.launch.py'),
+            'mapping': ManagedProcess('mapping', 'ros2 launch ylhb_base mapping.launch.py'),
+            'navigation': ManagedProcess(
+                'navigation',
+                f'ros2 launch ylhb_base navigation.launch.py map:={self.default_navigation_map}',
+            ),
+            'zed': ManagedProcess('zed', 'ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i'),
+            'perception': ManagedProcess(
+                'perception',
+                f'ros2 launch ylhb_perception perception.launch.py '
+                f'model_path:={self.perception_model_path} backend:=tensorrt half:=true',
+            ),
+            'llm': ManagedProcess(
+                'llm',
+                'ros2 launch ylhb_llm llm.launch.py '
+                'enable_display_ui:=false enable_system_supervisor:=false',
+            ),
+        }
+
+        self.status_pub = self.create_publisher(
+            String, self.get_parameter('system_status_topic').value, latched_qos())
+        self.mode_pub = self.create_publisher(
+            String, self.get_parameter('system_mode_topic').value, latched_qos())
+        self.cmd_vel_pub = self.create_publisher(
+            Twist, self.get_parameter('cmd_vel_topic').value, 10)
+        self.create_subscription(
+            String,
+            self.get_parameter('system_command_topic').value,
+            self.command_callback,
+            10,
+        )
+        self.create_timer(1.0, self.publish_status)
+        self.publish_status()
+        self.get_logger().info('System supervisor node started.')
+
+    def command_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.set_result('invalid_json', False, f'Invalid system command JSON: {exc}')
+            return
+        if not isinstance(payload, dict):
+            self.set_result('invalid_payload', False, 'System command must be a JSON object.')
+            return
+
+        command = str(payload.get('command') or '').strip()
+        if not command:
+            self.set_result('', False, 'Missing command.')
+            return
+
+        threading.Thread(target=self.handle_command, args=(command, payload), daemon=True).start()
+
+    def handle_command(self, command: str, payload: Dict[str, Any]) -> None:
+        if command.startswith('start_'):
+            name = command[len('start_'):]
+            if name in self.processes:
+                self.start_process(name)
+                if name == 'mapping':
+                    self.publish_mode('mapping')
+                return
+        if command.startswith('stop_'):
+            name = command[len('stop_'):]
+            if name in self.processes:
+                self.stop_process(name)
+                if name == 'mapping':
+                    self.publish_mode('ready')
+                return
+        if command == 'restart_navigation':
+            self.stop_process('navigation')
+            self.start_process('navigation')
+            return
+        if command == 'restart_perception':
+            self.stop_process('perception')
+            self.start_process('perception')
+            return
+        if command == 'save_map':
+            self.save_map(str(payload.get('map_name') or '').strip())
+            return
+        if command == 'emergency_stop':
+            self.emergency_stop()
+            return
+        if command == 'return_ready':
+            self.publish_mode('ready')
+            self.set_result(command, True, '已返回准备状态')
+            return
+        self.set_result(command, False, f'Unknown system command: {command}')
+
+    def start_process(self, name: str) -> None:
+        proc = self.processes[name]
+        with self.lock:
+            if proc.is_running():
+                self.set_result_locked(f'start_{name}', True, f'{name} already running')
+                return
+            cmd = self.wrap_command(proc.command)
+            proc.process = subprocess.Popen(
+                cmd,
+                shell=True,
+                executable='/bin/bash',
+                cwd=self.workspace_dir,
+                preexec_fn=os.setsid,
+            )
+            proc.last_message = f'started pid={proc.process.pid}'
+            self.set_result_locked(f'start_{name}', True, f'{name} started')
+
+    def stop_process(self, name: str) -> None:
+        proc = self.processes[name]
+        with self.lock:
+            if not proc.is_running():
+                self.set_result_locked(f'stop_{name}', True, f'{name} already stopped')
+                return
+            assert proc.process is not None
+            pid = proc.process.pid
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                try:
+                    proc.process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    proc.process.wait(timeout=2.0)
+                proc.last_message = 'stopped'
+                self.set_result_locked(f'stop_{name}', True, f'{name} stopped')
+            except Exception as exc:
+                self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
+
+    def save_map(self, map_name: str) -> None:
+        safe_name = ''.join(c for c in map_name if c.isalnum() or c in ('_', '-')).strip('_-')
+        if not safe_name:
+            safe_name = time.strftime('retail_map_%Y%m%d_%H%M')
+        os.makedirs(self.map_output_dir, exist_ok=True)
+        map_prefix = os.path.join(self.map_output_dir, safe_name)
+        cmd = self.wrap_command(f'ros2 run nav2_map_server map_saver_cli -f {map_prefix}')
+        try:
+            completed = subprocess.run(
+                cmd,
+                shell=True,
+                executable='/bin/bash',
+                cwd=self.workspace_dir,
+                timeout=30.0,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            self.set_result('save_map', False, f'保存地图失败: {exc}')
+            return
+        if completed.returncode == 0:
+            self.set_result('save_map', True, f'地图已保存: {map_prefix}.yaml')
+        else:
+            detail = (completed.stderr or completed.stdout or '').strip().splitlines()
+            message = detail[-1] if detail else f'map_saver_cli exited {completed.returncode}'
+            self.set_result('save_map', False, f'保存地图失败: {message}')
+
+    def emergency_stop(self) -> None:
+        self.publish_mode('fault')
+        twist = Twist()
+        for _ in range(5):
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        self.set_result('emergency_stop', True, '软件急停已发送')
+
+    def publish_mode(self, mode: str) -> None:
+        msg = String()
+        msg.data = mode
+        self.mode_pub.publish(msg)
+
+    def wrap_command(self, command: str) -> str:
+        return (
+            f'source /opt/ros/{self.ros_distro}/setup.bash && '
+            f'if [ -f "{self.workspace_dir}/install/setup.bash" ]; then '
+            f'source "{self.workspace_dir}/install/setup.bash"; fi && '
+            f'exec {command}'
+        )
+
+    def set_result(self, command: str, success: bool, message: str) -> None:
+        with self.lock:
+            self.set_result_locked(command, success, message)
+
+    def set_result_locked(self, command: str, success: bool, message: str) -> None:
+        self.last_command = command
+        self.last_success = bool(success)
+        self.last_message = message
+        self.get_logger().info(f'{command}: {message}')
+        self.publish_status_locked()
+
+    def publish_status(self) -> None:
+        with self.lock:
+            self.publish_status_locked()
+
+    def publish_status_locked(self) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'timestamp': time.time(),
+            'last_command': self.last_command,
+            'success': self.last_success,
+            'message': self.last_message,
+        }
+        for name, proc in self.processes.items():
+            payload[name] = 'running' if proc.is_running() else 'stopped'
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.status_pub.publish(msg)
+
+    def destroy_node(self) -> bool:
+        for name in list(self.processes):
+            try:
+                self.stop_process(name)
+            except Exception:
+                pass
+        return super().destroy_node()
+
+
+def main(args: Optional[List[str]] = None) -> None:
+    rclpy.init(args=args)
+    node = SystemSupervisorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

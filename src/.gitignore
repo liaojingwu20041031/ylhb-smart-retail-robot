@@ -1,0 +1,10 @@
+stm32_chassis/MDK-ARM/.vscode/
+stm32_chassis/MDK-ARM/.cmsis/device/
+stm32_chassis/MDK-ARM/build/
+stm32_chassis/MDK-ARM/bin/
+stm32_chassis/MDK-ARM/obj/
+stm32_chassis/MDK-ARM/out/
+stm32_chassis/MDK-ARM/*.uvoptx
+stm32_chassis/MDK-ARM/*.uvguix.*
+stm32_chassis/MDK-ARM/JLinkLog.txt
+stm32_chassis/MDK-ARM/startup_stm32f103xe.lst

@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WS_DIR="${WS_DIR:-$HOME/ros2_ws}"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+MODE="${1:-help}"
+
+source_ros_setup() {
+  set +u
+  source "$1"
+  set -u
+}
+
+cd "${WS_DIR}"
+source_ros_setup "/opt/ros/${ROS_DISTRO}/setup.bash"
+if [ -f "${WS_DIR}/install/setup.bash" ]; then
+  source_ros_setup "${WS_DIR}/install/setup.bash"
+fi
+
+disable_display_sleep() {
+  if ! command -v xset >/dev/null 2>&1; then
+    echo "WARN: xset not found; cannot disable display sleep automatically." >&2
+    return 0
+  fi
+  if [ -z "${XAUTHORITY:-}" ] && [ -f "${HOME}/.Xauthority" ]; then
+    export XAUTHORITY="${HOME}/.Xauthority"
+  fi
+  if ! xset q >/dev/null 2>&1; then
+    echo "WARN: cannot access DISPLAY=${DISPLAY}; skip display sleep disable." >&2
+    return 0
+  fi
+  xset s off >/dev/null 2>&1 || true
+  xset s noblank >/dev/null 2>&1 || true
+  xset -dpms >/dev/null 2>&1 || true
+}
+
+start_chinese_ime() {
+  if [ "${ENABLE_CHINESE_IME:-true}" != "true" ]; then
+    return 0
+  fi
+  export GTK_IM_MODULE="${GTK_IM_MODULE:-ibus}"
+  export QT_IM_MODULE="${QT_IM_MODULE:-ibus}"
+  export XMODIFIERS="${XMODIFIERS:-@im=ibus}"
+
+  if ! command -v ibus-daemon >/dev/null 2>&1; then
+    echo "WARN: ibus-daemon not found; Chinese IME is unavailable." >&2
+    return 0
+  fi
+  ibus-daemon -drx >/dev/null 2>&1 || true
+  if command -v ibus >/dev/null 2>&1; then
+    if ! ibus engine pinyin >/dev/null 2>&1; then
+      echo "WARN: cannot switch IBus engine to pinyin; install ibus-pinyin and check 'ibus list-engine'." >&2
+    fi
+  fi
+}
+
+case "${MODE}" in
+  bringup)
+    shift || true
+    exec ros2 launch ylhb_base bringup.launch.py "$@"
+    ;;
+  mapping)
+    shift || true
+    exec ros2 launch ylhb_base mapping.launch.py "$@"
+    ;;
+  navigation)
+    shift || true
+    exec ros2 launch ylhb_base navigation.launch.py "$@"
+    ;;
+  zed)
+    shift || true
+    exec ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i "$@"
+    ;;
+  perception)
+    shift || true
+    exec ros2 launch ylhb_perception perception.launch.py \
+      model_path:="${WS_DIR}/src/ylhb_perception/models/yolo26.engine" \
+      backend:=tensorrt \
+      half:=true \
+      "$@"
+    ;;
+  llm)
+    shift || true
+    exec ros2 launch ylhb_llm llm.launch.py "$@"
+    ;;
+  competition)
+    shift || true
+    export DISPLAY="${DISPLAY:-:0}"
+    if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
+      export DISPLAY=":0"
+    fi
+    disable_display_sleep
+    start_chinese_ime
+    exec ros2 launch ylhb_llm llm.launch.py \
+      enable_task_layer:=true \
+      enable_display_ui:=true \
+      enable_system_supervisor:=true \
+      enable_voice:=false \
+      enable_tts:=false \
+      display:="${DISPLAY}" \
+      "$@"
+    ;;
+  teleop)
+    shift || true
+    exec ros2 run teleop_twist_keyboard teleop_twist_keyboard "$@"
+    ;;
+  *)
+    cat <<EOF
+Usage: $0 <mode> [ros arguments]
+
+Modes:
+  bringup      Start base controller, IMU, RPLidar, robot_state_publisher, EKF
+  mapping      Start slam_toolbox mapping
+  navigation   Start Nav2 with default map ${WS_DIR}/src/my_map.yaml
+  zed          Start ZED 2i wrapper
+  perception   Start Jetson YOLO runtime with TensorRT engine
+  llm          Start retail AI task layer, image service, and voice I/O nodes
+  competition  Start display UI and system supervisor for competition control
+  teleop       Start keyboard teleop
+
+Examples:
+  $0 bringup
+  $0 zed
+  $0 perception model_path:=${WS_DIR}/src/ylhb_perception/models/yolo26.engine backend:=tensorrt imgsz:=960 half:=true
+  $0 llm enable_voice:=false enable_tts:=false
+  $0 competition fullscreen:=true
+  $0 navigation map:=${WS_DIR}/src/my_map.yaml
+EOF
+    ;;
+esac

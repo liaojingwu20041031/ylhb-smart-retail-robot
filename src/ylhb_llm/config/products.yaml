@@ -1,0 +1,97 @@
+products:
+  - id: toothpaste
+    name: 牙膏
+    category: hygiene
+    price: 10.0
+    aliases: [牙膏, 刷牙]
+    priority_for_intents: {hygiene: 100}
+  - id: coffee_nestle
+    name: 雀巢咖啡
+    category: coffee
+    price: 4.0
+    aliases: [雀巢咖啡, 咖啡, 提神饮料]
+    priority_for_intents: {drink: 55, energy: 85, sleepy: 90}
+  - id: shampoo
+    name: 洗发水
+    category: hygiene
+    price: 15.0
+    aliases: [洗发水, 洗头, 洗头膏]
+    priority_for_intents: {hygiene: 95}
+  - id: cola_coca
+    name: 可口可乐
+    category: soda
+    price: 3.0
+    aliases: [可口可乐, 可乐, 碳酸饮料]
+    priority_for_intents: {thirsty: 60, drink: 70}
+  - id: cola_pepsi
+    name: 百事可乐
+    category: soda
+    price: 3.0
+    aliases: [百事可乐, 百事, 可乐, 碳酸饮料]
+    priority_for_intents: {thirsty: 60, drink: 70}
+  - id: orange
+    name: 橘子
+    category: fruit
+    price: 2.0
+    aliases: [橘子, 桔子, 水果]
+    priority_for_intents: {hungry: 65, fruit: 100}
+  - id: apple
+    name: 苹果
+    category: fruit
+    price: 2.0
+    aliases: [苹果, 水果]
+    priority_for_intents: {hungry: 65, fruit: 100}
+  - id: milk_pure
+    name: 纯牛奶
+    category: milk
+    price: 3.0
+    aliases: [纯牛奶, 牛奶, 奶]
+    priority_for_intents: {drink: 80, nutrition: 90, thirsty: 70}
+  - id: water_nongfu
+    name: 农夫山泉矿泉水
+    category: water
+    price: 2.0
+    aliases: [农夫山泉矿泉水, 农夫山泉, 矿泉水, 水, 饮用水]
+    priority_for_intents: {thirsty: 100, drink: 95}
+  - id: tissue_vinda
+    name: 维达纸巾
+    category: tissue
+    price: 4.0
+    aliases: [维达纸巾, 纸巾, 抽纸, 餐巾纸]
+    priority_for_intents: {tissue: 100, clean: 80}
+  - id: chips
+    name: 薯片
+    category: snack
+    price: 3.0
+    aliases: [薯片, 零食]
+    priority_for_intents: {hungry: 80, snack: 100}
+  - id: seeds_qiaqia
+    name: 洽洽瓜子
+    category: snack
+    price: 5.0
+    aliases: [洽洽瓜子, 瓜子, 零食]
+    priority_for_intents: {snack: 90}
+  - id: oreo
+    name: 奥利奥饼干
+    category: snack
+    price: 6.0
+    aliases: [奥利奥饼干, 奥利奥, 饼干, 零食]
+    priority_for_intents: {hungry: 85, snack: 95}
+  - id: ad_milk_wahaha
+    name: 娃哈哈AD钙奶
+    category: milk_drink
+    price: 5.0
+    aliases: [娃哈哈AD钙奶, AD钙奶, 钙奶, 娃哈哈]
+    priority_for_intents: {drink: 80, nutrition: 80}
+  - id: nutrition_express
+    name: 营养快线
+    category: milk_drink
+    price: 6.0
+    aliases: [营养快线, 牛奶饮料]
+    priority_for_intents: {drink: 75, nutrition: 95, hungry: 60}
+  - id: redbull
+    name: 红牛
+    category: energy_drink
+    price: 6.0
+    aliases: [红牛, 功能饮料, 能量饮料]
+    priority_for_intents: {energy: 100, sleepy: 95, drink: 60}

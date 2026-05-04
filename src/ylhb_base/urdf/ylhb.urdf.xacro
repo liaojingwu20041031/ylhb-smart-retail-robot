@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ylhb_robot">
+
+  <!-- 1. 定义主要参考坐标系 (通常位于机器人底盘中心在地面的投影位置) -->
+  <link name="base_footprint"/>
+
+  <!-- 2. 小车主体框架：建立 base_link（设位于轮间距中心，尺寸 30x30 cm） -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <!-- 小车大致是个长宽 0.3x0.3m 的板，假设厚度为2cm -->
+        <box size="0.3 0.3 0.02"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.7 0.7 0.7 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- 将 base_link 与 base_footprint 链接。假设当前车轮半径为 3cm(0.03m) 
+       如果这里设为0，则代表轮距中心就在地板贴地上。 -->
+  <joint name="footprint_to_base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 3. 定义 IMU 的位置与物理属性 -->
+  <link name="imu_link">
+    <!-- 仅做在RVIZ中可视化时的示意（简单方块） -->
+    <visual>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0 0 1 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- 4. 定义 激光雷达 的位置与物理属性 -->
+  <link name="laser_link">
+    <!-- RVIZ可视化的简单圆柱体示意 -->
+    <visual>
+      <geometry>
+        <cylinder radius="0.035" length="0.03"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- ================= 连接关节 (Joints) ================= -->
+  
+  <!-- Base 到 IMU 的静态固定连接 
+       依据测量：相对轮间距中心向后(原正X为右，则负Y为后？等等，依据用户定义：正Y=前方，正X=右方。则负Y=-0.009为向后9mm)，正Z轴61mm -->
+  <joint name="base_to_imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <!-- 依据测量，IMU安装在车体正后方9mm处。
+         匹配 ROS 前左上标准坐标系 (X为前，Y为左，Z为上)： -->
+    <origin xyz="-0.009 0 0.061" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_to_laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_link"/>
+    <!-- 依据测量，雷达安装在车体正前方152mm处 (x = 0.152)。
+         方向标定：雷达自身输出的数据 Y轴正方向 对准了 小车的车头(正前X轴方向)。
+         这意味着雷达自身的 X轴 指向了小车的右侧 (-Y方向)。
+         因此，雷达坐标系相对于小车主坐标系顺时针旋转了90度，即 Yaw = -1.5707963 -->
+    <origin xyz="0.152 0 0.172" rpy="0 0 -1.5707963"/>
+  </joint>
+
+</robot>

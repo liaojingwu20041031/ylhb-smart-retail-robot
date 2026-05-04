@@ -1,0 +1,173 @@
+retail_task_node:
+  ros__parameters:
+    # 商品库配置文件。里面维护 16 类商品的标准 ID、中文名、别名、价格、推荐权重。
+    # 比赛现场如果商品名称、别名或价格变化，优先改这个文件，不改代码。
+    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
+
+    # 文字任务输入话题。命令行输入和 voice_input_node 的 ASR 结果都会发到这里。
+    # 示例内容：来瓶可乐 / 拿一瓶矿泉水 / 一共多少钱
+    text_command_topic: /retail_ai/text_command
+
+    # 视觉定位结果话题。来自 ylhb_perception/object_localizer_node.py。
+    # retail_task_node 会用这个话题确认货架上真实存在的商品，避免大模型凭空推荐。
+    localized_objects_topic: /perception/localized_objects
+
+    # AI 层发给导航/抓取层的结构化任务事件话题。
+    # 导航/抓取层应订阅它，然后执行去货架、抓取、去结算区、放置等动作。
+    task_event_topic: /retail_ai/task_event
+
+    # 导航/抓取层回传执行状态的话题。
+    # B-1 用 inspect_shelf 成功触发真实货架推荐；B-2 用 place 成功入账；C 用 checkout_inspect/return_start 完成清单和总价播报。
+    task_status_topic: /retail_ai/task_status
+
+    # 播报请求话题。retail_task_node 把所有需要说的话发到这里。
+    # voice_output_node 负责排队、TTS 和播放。
+    say_text_topic: /retail_ai/say_text
+
+    # 购物车状态话题。用于调试结算区识别出的商品、数量和本地计算出的总价。
+    cart_topic: /retail_ai/cart
+
+    # B-1 任务启动服务。使用 std_srvs/srv/Trigger，任务层自己扫描 task_image_dir。
+    start_b1_service_name: /retail_ai/start_b1_task
+
+    # 任务书图片目录。B-1 要求目录内只有一张 jpg/jpeg/png 图片。
+    task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
+
+    # 显示屏发布的全局系统模式：sleep/ready/mapping/running/fault。
+    system_mode_topic: /retail_ai/system_mode
+
+    # 货架识别结果有效期，单位秒。
+    # 超过这个时间没有新的 /perception/localized_objects，就认为货架结果过期，不做最终推荐。
+    shelf_snapshot_ttl_sec: 2.0
+
+    # DashScope OpenAI 兼容接口地址。中国内地北京地域使用下面这个地址。
+    # 如果使用国际/新加坡地域，需要换成 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+    # 视觉理解模型。比赛追求效果优先，默认使用 qwen3.6-plus。
+    # 如果现场网络慢或想降成本，可临时改 qwen3.6-flash。
+    vl_model: qwen3.6-plus
+
+    # 文本意图解析模型。用于复杂口语、多轮补充、商品名称归一化。
+    # 为了效果稳定，默认也使用 qwen3.6-plus。
+    chat_model: qwen3.6-plus
+
+    # 普通文本请求超时，单位秒。用于文字意图解析等。
+    # 太短容易误判超时；太长会影响比赛 60 秒响应限制。
+    request_timeout_sec: 15.0
+
+    # 图片理解请求超时，单位秒。qwen3.6-plus 第一次视觉请求可能较慢，所以默认 45 秒。
+    # 如果比赛现场网络稳定，可调到 20~30；如果仍超时，可临时调到 60。
+    vision_timeout_sec: 45.0
+
+    # 是否在 TaskEvent.raw_json 和 CartState.raw_json 中保留调试 JSON。
+    # 调试阶段建议 true；正式比赛如果想减少消息长度可设 false。
+    publish_raw_json: true
+
+basic_motion_command_node:
+  ros__parameters:
+    # A-1 基本运动语音/文字入口，和 ASR 结果共用同一个文字话题。
+    text_command_topic: /retail_ai/text_command
+
+    # 显示屏发布的全局系统模式。sleep/fault 下只响应停止；mapping 下允许手动建图运动。
+    system_mode_topic: /retail_ai/system_mode
+
+    # 底盘速度控制话题，base_controller 订阅该话题。
+    cmd_vel_topic: /cmd_vel
+
+    # 基本运动调试速度。比赛 A-1 只需展示前进/后退/左转/右转，不追求高速。
+    linear_speed: 0.12
+    angular_speed: 0.45
+
+    # 每条运动指令持续时间，到时自动发布零速度停止。
+    motion_duration_sec: 1.0
+
+retail_display_ui_node:
+  ros__parameters:
+    text_command_topic: /retail_ai/text_command
+    system_mode_topic: /retail_ai/system_mode
+    system_command_topic: /retail_ai/system_command
+    system_status_topic: /retail_ai/system_status
+    task_event_topic: /retail_ai/task_event
+    task_status_topic: /retail_ai/task_status
+    say_text_topic: /retail_ai/say_text
+    cart_topic: /retail_ai/cart
+    voice_status_topic: /retail_ai/voice_status
+    localized_objects_topic: /perception/localized_objects
+    start_b1_service_name: /retail_ai/start_b1_task
+    task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
+    cmd_vel_topic: /cmd_vel
+    initial_system_mode: ready
+    fullscreen: true
+    display: ":0"
+    force_local_display: true
+
+system_supervisor_node:
+  ros__parameters:
+    system_command_topic: /retail_ai/system_command
+    system_status_topic: /retail_ai/system_status
+    system_mode_topic: /retail_ai/system_mode
+    cmd_vel_topic: /cmd_vel
+    workspace_dir: /home/nvidia/ros2_ws
+    ros_distro: humble
+    map_output_dir: /home/nvidia/ros2_ws/src/maps
+    default_navigation_map: /home/nvidia/ros2_ws/src/my_map.yaml
+    perception_model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+
+voice_input_node:
+  ros__parameters:
+    # ASR 识别出的文字发布到这个话题，retail_task_node 会按文字指令处理。
+    text_command_topic: /retail_ai/text_command
+
+    # ALSA 录音设备。default 表示系统默认麦克风。
+    # 如果 arecord -l 显示 CZ007 是 hw:2,0，则启动时传 audio_device:=hw:2,0。
+    audio_device: default
+
+    # 每次录音时长，单位秒。短命令推荐 3~5 秒。
+    # 太短可能截断语音，太长会增加 ASR 延迟。
+    record_sec: 4.0
+
+    # 录音采样率。中文短语音识别用 16000 通常足够。
+    sample_rate: 16000
+
+    # 是否启用语音输入。默认 false，避免没有 CZ007 或声卡时反复报错。
+    # 接上 CZ007 并确认 arecord -l 正常后再设 true。
+    enabled: false
+
+    # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+    # ASR 模型。后续如切换实时 WebSocket ASR，需要配合代码改造。
+    asr_model: qwen3-asr-flash
+
+    # ASR 请求超时，单位秒。现场短语音建议 10~15 秒以内。
+    request_timeout_sec: 15.0
+
+voice_output_node:
+  ros__parameters:
+    # 播报请求输入话题。retail_task_node 会发布 SayText 到这里。
+    say_text_topic: /retail_ai/say_text
+
+    # 播报状态输出话题。用于查看当前是否正在说话、正在播报哪个 task_id。
+    voice_status_topic: /retail_ai/voice_status
+
+    # 是否启用语音输出节点的播放功能。
+    # false 时仍会打印 SAY[...] 日志，方便先调试逻辑。
+    enabled: false
+
+    # 是否调用云端 TTS 生成语音。
+    # enabled=true 且 tts_enabled=true 时才会真正生成并播放音频。
+    tts_enabled: false
+
+    # ALSA 播放设备。default 表示系统默认扬声器。
+    # 如果 aplay -l 显示输出设备是 hw:2,0，则启动时传 audio_device:=hw:2,0。
+    audio_device: default
+
+    # DashScope OpenAI 兼容接口地址，和 retail_task_node 保持一致。
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+    # TTS 模型。若账号未开通该模型，需要按百炼控制台可用模型 ID 替换。
+    tts_model: qwen3-tts-flash
+
+    # TTS 请求超时，单位秒。播报内容较长时可适当调大。
+    request_timeout_sec: 15.0

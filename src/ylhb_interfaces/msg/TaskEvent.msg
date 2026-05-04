@@ -1,0 +1,10 @@
+std_msgs/Header header
+string task_id
+string intent
+string item_id
+string item_name
+string destination
+float32 confidence
+string source
+bool requires_ack
+string raw_json

@@ -1,0 +1,45 @@
+### ekf config file ###
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    publish_tf: true
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # 轮式里程计配置 (基于base_controller的/odom话题)
+    # 对于2D机器人，我们一般相信里程计的 X速度，也可能加上Y速度和Yaw角速度
+    # 格式: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom0: odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_nodelay: false
+    odom0_differential: false
+    odom0_relative: false
+
+    # IMU配置 (基于imu_driver的/imu/data话题)
+    # 我们读取IMU的Yaw角度，以及Yaw角速度，可能还有X轴方向加速度
+    imu0: imu/data
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false,  false, false]
+    imu0_nodelay: false
+    imu0_differential: false
+    imu0_relative: true
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true

@@ -7,7 +7,8 @@ from std_msgs.msg import String
 
 
 class LegacyVisionBridge(Node):
-    """Deprecated compatibility bridge for old /vision topics.
+    """
+    Deprecated compatibility bridge for old /vision topics.
 
     The active Jetson-native perception pipeline lives in ylhb_perception.
     This node only republishes its outputs to the legacy topic names that

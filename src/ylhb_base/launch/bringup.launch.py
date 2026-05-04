@@ -7,11 +7,12 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_base')
     ekf_config_path = os.path.join(pkg_dir, 'config', 'ekf.yaml')
     rplidar_pkg_dir = get_package_share_directory('rplidar_ros')
-    
+
     # 引入机器人模型的 urdf.xacro 文件定位
     urdf_file = os.path.join(pkg_dir, 'urdf', 'ylhb.urdf.xacro')
 
@@ -42,7 +43,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'serial_port': base_port},
-            {'publish_tf': False} # 重要：防止 TF 冲突
+            {'publish_tf': False}  # 重要：防止 TF 冲突
         ]
     )
 

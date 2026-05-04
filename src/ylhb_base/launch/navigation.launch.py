@@ -3,13 +3,14 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch_ros.actions import Node
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_base')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
 
     map_yaml_file = LaunchConfiguration('map')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -17,7 +18,7 @@ def generate_launch_description():
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
         'map',
-        default_value=os.path.expanduser('~/ros2_ws/src/my_map.yaml'),
+        default_value=os.path.join(workspace_dir, 'src', 'my_map.yaml'),
         description='Full path to map yaml file to load')
 
     declare_use_sim_time_cmd = DeclareLaunchArgument(

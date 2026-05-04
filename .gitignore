@@ -34,3 +34,14 @@ Thumbs.db
 *.log
 core
 core.*
+
+# Local secrets and machine-specific configuration
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519

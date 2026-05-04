@@ -10,8 +10,10 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_perception')
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
     default_params = os.path.join(pkg_dir, 'config', 'detector.yaml')
-    default_model = os.path.expanduser('~/ros2_ws/src/ylhb_perception/models/yolo26.engine')
+    default_model = os.path.join(
+        workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
 
     params_file = LaunchConfiguration('params_file')
     image_topic = LaunchConfiguration('image_topic')

@@ -22,6 +22,11 @@ def latched_qos() -> QoSProfile:
     )
 
 
+def workspace_path(*parts: str) -> str:
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    return os.path.join(workspace_dir, *parts)
+
+
 class ManagedProcess:
     def __init__(self, name: str, command: str) -> None:
         self.name = name
@@ -40,11 +45,11 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('system_status_topic', '/retail_ai/system_status')
         self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('workspace_dir', '/home/nvidia/ros2_ws')
+        self.declare_parameter('workspace_dir', os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws')))
         self.declare_parameter('ros_distro', 'humble')
-        self.declare_parameter('map_output_dir', '/home/nvidia/ros2_ws/src/maps')
-        self.declare_parameter('default_navigation_map', '/home/nvidia/ros2_ws/src/my_map.yaml')
-        self.declare_parameter('perception_model_path', '/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine')
+        self.declare_parameter('map_output_dir', workspace_path('src', 'maps'))
+        self.declare_parameter('default_navigation_map', workspace_path('src', 'my_map.yaml'))
+        self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
 
         self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
         self.ros_distro = str(self.get_parameter('ros_distro').value)

@@ -11,8 +11,14 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_llm')
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
     default_params = os.path.join(pkg_dir, 'config', 'llm.yaml')
-    default_products = os.path.expanduser('~/ros2_ws/src/ylhb_llm/config/products.yaml')
+    default_products = os.path.join(pkg_dir, 'config', 'products.yaml')
+    default_task_image_dir = os.path.join(pkg_dir, 'test_images')
+    default_map_output_dir = os.path.join(workspace_dir, 'src', 'maps')
+    default_navigation_map = os.path.join(workspace_dir, 'src', 'my_map.yaml')
+    default_perception_model = os.path.join(
+        workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
 
     params_file = LaunchConfiguration('params_file')
     products_file = LaunchConfiguration('products_file')
@@ -32,6 +38,10 @@ def generate_launch_description():
     fullscreen = LaunchConfiguration('fullscreen')
     display = LaunchConfiguration('display')
     force_local_display = LaunchConfiguration('force_local_display')
+    workspace_dir_arg = LaunchConfiguration('workspace_dir')
+    map_output_dir = LaunchConfiguration('map_output_dir')
+    default_navigation_map_arg = LaunchConfiguration('default_navigation_map')
+    perception_model_path = LaunchConfiguration('perception_model_path')
 
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
@@ -47,7 +57,11 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
-        DeclareLaunchArgument('task_image_dir', default_value='/home/nvidia/ros2_ws/src/ylhb_llm/test_images'),
+        DeclareLaunchArgument('task_image_dir', default_value=default_task_image_dir),
+        DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
+        DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
+        DeclareLaunchArgument('default_navigation_map', default_value=default_navigation_map),
+        DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
         DeclareLaunchArgument('initial_system_mode', default_value='ready'),
         DeclareLaunchArgument('fullscreen', default_value='true'),
         DeclareLaunchArgument('display', default_value=':0'),
@@ -117,7 +131,15 @@ def generate_launch_description():
             name='system_supervisor_node',
             output='screen',
             condition=IfCondition(enable_system_supervisor),
-            parameters=[params_file],
+            parameters=[
+                params_file,
+                {
+                    'workspace_dir': workspace_dir_arg,
+                    'map_output_dir': map_output_dir,
+                    'default_navigation_map': default_navigation_map_arg,
+                    'perception_model_path': perception_model_path,
+                },
+            ],
         ),
         Node(
             package='ylhb_llm',

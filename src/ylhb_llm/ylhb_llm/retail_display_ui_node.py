@@ -44,6 +44,11 @@ TASK_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 SYSTEM_MODES = ('sleep', 'ready', 'mapping', 'running', 'fault')
 
 
+def workspace_path(*parts: str) -> str:
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    return os.path.join(workspace_dir, *parts)
+
+
 def configure_input_method_environment() -> None:
     if os.getenv('ENABLE_CHINESE_IME', 'true') != 'true':
         return
@@ -108,7 +113,7 @@ class RetailDisplayRosBridge(Node):
         self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
         self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
-        self.declare_parameter('task_image_dir', '/home/nvidia/ros2_ws/src/ylhb_llm/test_images')
+        self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('initial_system_mode', 'ready')
         self.declare_parameter('fullscreen', True)

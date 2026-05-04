@@ -12,6 +12,12 @@
 
 项目现在以 Jetson Orin Nano Super 本机开发、本机构建、本机运行为准。
 
+默认工作区路径是 `~/ros2_ws`。如需部署到其他目录，先设置：
+
+```bash
+export WS_DIR=/path/to/ros2_ws
+```
+
 旧流程已经废弃：
 
 ```text

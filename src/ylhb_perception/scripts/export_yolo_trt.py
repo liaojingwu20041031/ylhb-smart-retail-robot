@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
+
+
+def workspace_path(*parts):
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    return str(Path(workspace_dir).joinpath(*parts))
 
 
 def parse_args():
@@ -12,12 +18,12 @@ def parse_args():
     )
     parser.add_argument(
         '--onnx',
-        default='/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.onnx',
+        default=workspace_path('src', 'ylhb_perception', 'models', 'yolo26.onnx'),
         help='Input ONNX model path copied from the PC.',
     )
     parser.add_argument(
         '--output',
-        default='/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine',
+        default=workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'),
         help='Output TensorRT .engine path for Jetson runtime.',
     )
     parser.add_argument(

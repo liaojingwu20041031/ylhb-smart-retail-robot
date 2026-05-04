@@ -19,6 +19,11 @@ from .qwen_client import QwenClient, QwenClientError
 TASK_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 
 
+def workspace_path(*parts: str) -> str:
+    workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+    return os.path.join(workspace_dir, *parts)
+
+
 def system_mode_qos() -> QoSProfile:
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
@@ -32,7 +37,7 @@ class RetailTaskNode(Node):
     def __init__(self) -> None:
         super().__init__('retail_task_node')
 
-        self.declare_parameter('products_file', '/home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml')
+        self.declare_parameter('products_file', workspace_path('src', 'ylhb_llm', 'config', 'products.yaml'))
         self.declare_parameter('text_command_topic', '/retail_ai/text_command')
         self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
         self.declare_parameter('task_event_topic', '/retail_ai/task_event')
@@ -40,7 +45,7 @@ class RetailTaskNode(Node):
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
         self.declare_parameter('cart_topic', '/retail_ai/cart')
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
-        self.declare_parameter('task_image_dir', '/home/nvidia/ros2_ws/src/ylhb_llm/test_images')
+        self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
         self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
         self.declare_parameter('shelf_snapshot_ttl_sec', 2.0)
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')

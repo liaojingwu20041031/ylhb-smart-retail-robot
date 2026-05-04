@@ -5,7 +5,6 @@ import os
 import time
 from typing import Any, Dict, List
 
-import cv2
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
@@ -20,7 +19,10 @@ class YoloDetectorNode(Node):
         self.declare_parameter('image_topic', '/zed/zed_node/rgb/color/rect/image')
         self.declare_parameter('detections_topic', '/perception/detections')
         self.declare_parameter('debug_image_topic', '/perception/debug_image')
-        self.declare_parameter('model_path', '/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine')
+        workspace_dir = os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws'))
+        default_model = os.path.join(
+            workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
+        self.declare_parameter('model_path', default_model)
         self.declare_parameter('backend', 'tensorrt')
         self.declare_parameter('confidence_threshold', 0.35)
         self.declare_parameter('iou_threshold', 0.45)

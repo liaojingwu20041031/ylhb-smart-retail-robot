@@ -2,6 +2,12 @@
 
 当前 ROS 2 工作区以 Jetson Orin Nano Super 本机开发、构建、运行为主，不再使用旧的 RDK X5 / PC 传板流程。
 
+默认工作区路径是 `~/ros2_ws`。如果克隆到其他目录，运行脚本前设置：
+
+```bash
+export WS_DIR=/path/to/ros2_ws
+```
+
 ## 主要目录
 
 - `ylhb_base/`：底盘、IMU、URDF、EKF、RPLidar bringup、SLAM、Nav2
@@ -21,6 +27,16 @@ cd ~/ros2_ws
 ```
 
 `scripts/run_on_jetson.sh` 会自动加载 `/opt/ros/$ROS_DISTRO/setup.bash` 和 `install/setup.bash`。日常启动不需要手动 `source`；如果当前终端开了 `set -u`，手动 source ROS 环境可能触发 `AMENT_TRACE_SETUP_FILES: unbound variable`。
+
+构建脚本会在 `colcon build` 阶段设置 `PYTHONNOUSERSITE=1`，避免用户级 `pip` 包覆盖 ROS/Ubuntu 构建工具。自研包验证命令：
+
+```bash
+PYTHONNOUSERSITE=1 colcon test \
+  --packages-select ylhb_base ylhb_perception ylhb_llm ylhb_interfaces \
+  --event-handlers console_direct+
+```
+
+ZED/RPLidar 第三方源码用于比赛部署构建；完整 `colcon test` 可能因 vendor lint 或离线 schema 校验失败，不作为自研项目质量门槛。
 
 启动底盘、IMU、雷达、URDF、EKF：
 

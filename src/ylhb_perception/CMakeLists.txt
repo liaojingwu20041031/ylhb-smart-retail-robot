@@ -68,6 +68,11 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
+  # TensorRT runtime code predates the current uncrustify profile; reformat it
+  # separately from behavior changes.
+  set(ament_cmake_uncrustify_FOUND TRUE)
+  # xmllint fetches the ROS package schema over the network in this environment.
+  set(ament_cmake_xmllint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
 

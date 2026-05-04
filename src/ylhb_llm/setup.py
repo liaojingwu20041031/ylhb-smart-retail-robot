@@ -12,13 +12,14 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/test_images', glob('test_images/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='nvidia',
-    maintainer_email='nvidia@todo.todo',
+    maintainer='liaojingwu20041031',
+    maintainer_email='206929594+liaojingwu20041031@users.noreply.github.com',
     description='Retail competition AI task layer.',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [

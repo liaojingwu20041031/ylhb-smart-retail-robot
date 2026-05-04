@@ -4,6 +4,12 @@
 
 本仓库是一个完整 ROS 2 工作区源码仓库。`build/`、`install/`、`log/` 和模型二进制文件不随仓库提交，克隆后需要在目标 Jetson 上本机构建。
 
+默认工作区路径是 `~/ros2_ws`。如果克隆到其他目录，运行脚本前设置：
+
+```bash
+export WS_DIR=/path/to/ros2_ws
+```
+
 ## 项目能力
 
 - 底盘与传感器：底盘串口控制、IMU 驱动、RPLidar 激光雷达、URDF 机器人模型、EKF 融合。
@@ -62,6 +68,18 @@ cd ~/ros2_ws
 ```
 
 `scripts/run_on_jetson.sh` 会自动加载 `/opt/ros/$ROS_DISTRO/setup.bash` 和 `install/setup.bash`。日常启动不需要手动 `source`。
+
+构建脚本会在 `colcon build` 阶段设置 `PYTHONNOUSERSITE=1`，避免用户目录中通过 `pip --user` 安装的 Python 包覆盖 ROS/Ubuntu 自带构建工具。
+
+自研包验证命令：
+
+```bash
+PYTHONNOUSERSITE=1 colcon test \
+  --packages-select ylhb_base ylhb_perception ylhb_llm ylhb_interfaces \
+  --event-handlers console_direct+
+```
+
+仓库包含 ZED/RPLidar 第三方源码。第三方包用于部署构建，默认不把 vendor lint 作为项目质量门槛；完整 `colcon test` 可能因第三方包格式规则或离线 schema 校验失败。
 
 ## 常用启动命令
 
@@ -189,6 +207,13 @@ export DISPLAY=:0
 - `src/rplidar_ros-ros2/`：Slamtec RPLidar ROS 2 driver
 
 第三方组件的许可证文件保留在各自目录中。业务逻辑主要放在 `ylhb_base`、`ylhb_perception`、`ylhb_llm` 和 `ylhb_interfaces`。
+
+## 安全与规范
+
+- 不提交 `DASHSCOPE_API_KEY`、`.env`、SSH key、证书或其他本机密钥。
+- 不提交 `.onnx`、`.engine`、`.pt` 等模型二进制文件。
+- 串口权限优先使用 udev 规则或用户组，不建议长期使用 `chmod 777`。
+- 安全和部署注意事项见 [SECURITY.md](SECURITY.md)。
 
 ## 详细文档
 

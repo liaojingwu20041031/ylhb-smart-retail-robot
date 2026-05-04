@@ -3,9 +3,9 @@
 <package format="3">
   <name>ylhb_base</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ljw@todo.todo">ljw</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Base control, robot model, sensor bringup, SLAM, and Nav2 launch files for the YLHB smart retail robot.</description>
+  <maintainer email="206929594+liaojingwu20041031@users.noreply.github.com">liaojingwu20041031</maintainer>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

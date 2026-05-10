@@ -55,9 +55,20 @@ retail_task_node:
     # 为了效果稳定，默认也使用 qwen3.6-plus。
     chat_model: qwen3.6-plus
 
+    # B-2 语音实时分类模型：只做意图/类别/约束分类，最终选品和执行仍由本地状态机决定。
+    fast_classifier_model: qwen3.6-flash
+    classifier_timeout_sec: 4.0
+    enable_fast_sales_classifier: true
+    classifier_confidence_threshold: 0.72
+    enable_plus_fallback: true
+    plus_fallback_confidence_threshold: 0.62
+    sales_reply_min_chars: 90
+    sales_reply_max_chars: 180
+    voice_requires_confirmation: true
+
     # 普通文本请求超时，单位秒。用于文字意图解析等。
     # 太短容易误判超时；太长会影响比赛 60 秒响应限制。
-    request_timeout_sec: 15.0
+    request_timeout_sec: 12.0
 
     # 图片理解请求超时，单位秒。qwen3.6-plus 第一次视觉请求可能较慢，所以默认 45 秒。
     # 如果比赛现场网络稳定，可调到 20~30；如果仍超时，可临时调到 60。
@@ -184,10 +195,13 @@ voice_session_node:
     sample_rate: 16000
     frame_ms: 30
     energy_threshold: 550
-    vad_silence_sec: 1.0
-    min_voice_sec: 0.5
-    max_utterance_sec: 8.0
-    session_idle_timeout_sec: 20.0
+    vad_silence_sec: 0.65
+    min_voice_sec: 0.45
+    max_utterance_sec: 6.0
+    session_idle_timeout_sec: 35.0
+    asr_empty_silent_first: true
+    asr_fail_prompt_threshold: 2
+    asr_fail_standby_threshold: 3
 
 voice_command_router_node:
   ros__parameters:
@@ -228,4 +242,7 @@ voice_output_node:
     tts_language_type: Chinese
 
     # TTS 请求超时，单位秒。播报内容较长时可适当调大。
-    request_timeout_sec: 15.0
+    request_timeout_sec: 10.0
+    enable_tts_cache: true
+    split_long_tts: true
+    tts_segment_max_chars: 70

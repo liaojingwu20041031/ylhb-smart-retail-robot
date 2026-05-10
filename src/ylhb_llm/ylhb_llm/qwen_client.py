@@ -139,10 +139,16 @@ class QwenClient:
             '你的任务是根据用户中文口语、历史对话和商品清单，判断是否执行购买、推荐商品、追问、取消或未知。'
             '你不是只给一个商品，而是像真实销售员一样：如果用户需求明确但商品未明确，给出一个主推商品，'
             '同时给出1到2个相关备选商品。主推商品必须最符合用户当前需求，备选商品必须和需求相关。'
-            '如果用户明确说出商品名或别名，action=execute_pick。'
+            '如果 source=voice，即使用户明确说出商品名或别名，也必须 action=propose_product，'
+            'requires_confirmation=true，不允许直接 execute_pick。'
+            '如果 source=text，用户明确说出商品名或别名，可以 action=execute_pick。'
             '如果用户表达需求但没有明确商品，action=propose_product。'
             '如果信息不足，action=ask_clarification。'
-            '如果用户确认上一轮推荐，action=execute_pick，并选择当前主推商品。'
+            '只有用户明确说“确认/确定/就这个/我要这个/开始取货/帮我拿这个”，'
+            '并且 dialogue.pending_proposal 存在时，才允许 action=execute_pick，并选择当前主推商品。'
+            '用户说“是/对/好/可以”不等于最终执行确认。'
+            '用户说“不需要”时必须根据 dialogue.waiting_for 判断：ask_addon 表示不需要搭配，'
+            'confirm_product 表示取消当前推荐。'
             '如果用户说换一个，避开 rejected_product_ids 和 last_product_id，优先从 related_products 或同类商品中重新推荐。'
             '如果用户说不要碳酸的、便宜点、健康点等约束，根据上下文和约束重新排序推荐。'
             '如果用户取消，action=cancel。'
@@ -171,6 +177,45 @@ class QwenClient:
             messages=[
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            timeout_sec=timeout_sec,
+            temperature=0.0,
+            extra_body={'enable_thinking': False},
+        )
+        return parse_json_object(out)
+
+    def classify_sales_category(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float,
+        dialogue: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        system_prompt = (
+            '你是智慧零售机器人 B-2 语音销售分类器。'
+            '你只负责把用户中文口语分类成结构化 JSON，不负责生成完整销售回复，不负责决定最终执行取货。'
+            '必须快速、保守、稳定。输出必须是 JSON，不要 Markdown。'
+            '字段：dialogue_action: recommend/confirm/modify/cancel/ask_catalog/checkout/motion/unknown；'
+            'need_category: thirsty/drink/hungry/snack/fruit/nutrition/energy/sleepy/hygiene/tissue/clean/daily_goods/unknown；'
+            'product_mention: 用户明确提到的商品名，没有则为空；'
+            'positive_constraints: 数组，可选 cheap/healthy/sweet/salty/filling/refreshing/non_carbonated；'
+            'negative_constraints: 数组，可选 carbonated/expensive/sweet/cold；'
+            'confidence: 0到1；reason_cn: 20字以内分类原因。'
+            '注意：用户说确认/确定/就这个/我要这个/开始取货/帮我拿这个，dialogue_action=confirm。'
+            '用户说换一个/不要这个/便宜点/不要碳酸的，dialogue_action=modify。'
+            '用户说不买了/取消/算了，dialogue_action=cancel。'
+            '用户问你卖什么，dialogue_action=ask_catalog。'
+            '用户说是/对/好/可以，不要输出 confirm，按上下文输出 recommend/unknown。'
+        )
+        payload = {
+            'current_user_text': text,
+            'dialogue': dialogue,
+        }
+        out = self.chat_completion(
+            model=model,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
             ],
             timeout_sec=timeout_sec,
             temperature=0.0,

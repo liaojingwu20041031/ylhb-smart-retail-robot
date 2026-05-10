@@ -27,6 +27,9 @@ class VoiceOutputNode(Node):
         self.declare_parameter('tts_voice', 'Serena')
         self.declare_parameter('tts_language_type', 'Chinese')
         self.declare_parameter('request_timeout_sec', 5.0)
+        self.declare_parameter('enable_tts_cache', True)
+        self.declare_parameter('split_long_tts', True)
+        self.declare_parameter('tts_segment_max_chars', 70)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.tts_enabled = bool(self.get_parameter('tts_enabled').value)
@@ -37,10 +40,15 @@ class VoiceOutputNode(Node):
         self.tts_voice = str(self.get_parameter('tts_voice').value)
         self.tts_language_type = str(self.get_parameter('tts_language_type').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
+        self.enable_tts_cache = bool(self.get_parameter('enable_tts_cache').value)
+        self.split_long_tts = bool(self.get_parameter('split_long_tts').value)
+        self.tts_segment_max_chars = int(self.get_parameter('tts_segment_max_chars').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
         self.stop_event = threading.Event()
         self.current_task_id = ''
+        self.tts_cache: dict[tuple[str, str, str, str], bytes] = {}
+        self.tts_cache_order: list[tuple[str, str, str, str]] = []
 
         self.status_pub = self.create_publisher(
             VoiceStatus, self.get_parameter('voice_status_topic').value, 10)
@@ -71,7 +79,11 @@ class VoiceOutputNode(Node):
             if text:
                 self.get_logger().info(f'SAY[{msg.task_id}]: {text}')
             if self.enabled and self.tts_enabled and text:
-                self.speak(text)
+                segments = self.split_tts_segments(text, self.tts_segment_max_chars) if self.split_long_tts else [text]
+                for segment in segments:
+                    if self.stop_event.is_set():
+                        break
+                    self.speak(segment)
             self.current_task_id = ''
             self.queue.task_done()
 
@@ -79,14 +91,19 @@ class VoiceOutputNode(Node):
         if not self.qwen.available():
             self.get_logger().warn('DASHSCOPE_API_KEY is not set; skipping TTS playback.')
             return
+        cache_key = (self.tts_model, self.tts_voice, self.tts_language_type, text)
         try:
-            audio = self.qwen.synthesize_speech_bytes(
-                text=text,
-                model=self.tts_model,
-                timeout_sec=self.request_timeout_sec,
-                voice=self.tts_voice,
-                language_type=self.tts_language_type,
-            )
+            audio = self.tts_cache.get(cache_key) if self.enable_tts_cache else None
+            if audio is None:
+                audio = self.qwen.synthesize_speech_bytes(
+                    text=text,
+                    model=self.tts_model,
+                    timeout_sec=self.request_timeout_sec,
+                    voice=self.tts_voice,
+                    language_type=self.tts_language_type,
+                )
+                if audio and self.enable_tts_cache:
+                    self.remember_tts_cache(cache_key, audio)
         except QwenClientError as exc:
             self.get_logger().warn(f'TTS failed: {exc}')
             return
@@ -111,6 +128,51 @@ class VoiceOutputNode(Node):
                 os.unlink(audio_path)
             except OSError:
                 pass
+
+    def split_tts_segments(self, text: str, max_chars: int) -> list[str]:
+        text = text.strip()
+        if not text:
+            return []
+        max_chars = max(10, int(max_chars))
+        raw_segments = []
+        buf = ''
+        for ch in text:
+            buf += ch
+            if ch in '。！？；;':
+                raw_segments.append(buf.strip())
+                buf = ''
+        if buf.strip():
+            raw_segments.append(buf.strip())
+
+        merged = []
+        current = ''
+        for seg in raw_segments:
+            if not current:
+                current = seg
+                continue
+            if len(current) + len(seg) <= max_chars:
+                current += seg
+            else:
+                merged.append(current)
+                current = seg
+        if current:
+            merged.append(current)
+
+        final_segments = []
+        for seg in merged:
+            while len(seg) > max_chars:
+                final_segments.append(seg[:max_chars])
+                seg = seg[max_chars:]
+            if seg:
+                final_segments.append(seg)
+        return final_segments
+
+    def remember_tts_cache(self, key: tuple[str, str, str, str], audio: bytes) -> None:
+        self.tts_cache[key] = audio
+        self.tts_cache_order.append(key)
+        while len(self.tts_cache_order) > 64:
+            old = self.tts_cache_order.pop(0)
+            self.tts_cache.pop(old, None)
 
     def publish_status(self) -> None:
         msg = VoiceStatus()

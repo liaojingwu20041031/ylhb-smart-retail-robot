@@ -51,7 +51,10 @@ class VoiceSessionNode(Node):
         self.declare_parameter('vad_silence_sec', 1.0)
         self.declare_parameter('min_voice_sec', 0.5)
         self.declare_parameter('max_utterance_sec', 8.0)
-        self.declare_parameter('session_idle_timeout_sec', 20.0)
+        self.declare_parameter('session_idle_timeout_sec', 35.0)
+        self.declare_parameter('asr_empty_silent_first', True)
+        self.declare_parameter('asr_fail_prompt_threshold', 2)
+        self.declare_parameter('asr_fail_standby_threshold', 3)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)
@@ -68,6 +71,9 @@ class VoiceSessionNode(Node):
         self.min_voice_sec = float(self.get_parameter('min_voice_sec').value)
         self.max_utterance_sec = float(self.get_parameter('max_utterance_sec').value)
         self.session_idle_timeout_sec = float(self.get_parameter('session_idle_timeout_sec').value)
+        self.asr_empty_silent_first = bool(self.get_parameter('asr_empty_silent_first').value)
+        self.asr_fail_prompt_threshold = int(self.get_parameter('asr_fail_prompt_threshold').value)
+        self.asr_fail_standby_threshold = int(self.get_parameter('asr_fail_standby_threshold').value)
 
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
         self.event_pub = self.create_publisher(String, self.get_parameter('voice_command_event_topic').value, 10)
@@ -99,6 +105,7 @@ class VoiceSessionNode(Node):
         self.utterance_seq = 0
         self.state = 'OFF'
         self.is_tts_playing = False
+        self.last_tts_speaking = False
         self.is_recording = False
         self.asr_fail_count = 0
         self.last_asr_text = ''
@@ -145,7 +152,11 @@ class VoiceSessionNode(Node):
         return response
 
     def voice_status_callback(self, msg: VoiceStatus) -> None:
-        self.is_tts_playing = bool(msg.speaking)
+        speaking = bool(msg.speaking)
+        if self.last_tts_speaking and not speaking:
+            self.last_active_at = time.monotonic()
+        self.is_tts_playing = speaking
+        self.last_tts_speaking = speaking
 
     def session_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -170,18 +181,27 @@ class VoiceSessionNode(Node):
             self.state = 'ASR_PROCESSING'
             text = self.transcribe_pcm(audio)
             if not text:
-                self.asr_fail_count += 1
-                if self.awakened:
-                    if self.asr_fail_count >= 3:
-                        self.awakened = False
-                        self.state = 'WAIT_WAKE'
-                        self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
-                    else:
-                        self.say('voice_session', '我没有听清，请再说一遍。', priority=5)
+                self.handle_empty_asr()
                 continue
             self.asr_fail_count = 0
             self.last_asr_text = text
             self.handle_asr_text(text)
+
+    def handle_empty_asr(self) -> None:
+        if not self.awakened:
+            self.asr_fail_count = 0
+            self.state = 'WAIT_WAKE'
+            return
+        self.asr_fail_count += 1
+        if self.asr_fail_count >= self.asr_fail_standby_threshold:
+            self.awakened = False
+            self.state = 'WAIT_WAKE'
+            self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
+            return
+        if self.asr_empty_silent_first and self.asr_fail_count < self.asr_fail_prompt_threshold:
+            self.state = 'AWAKENED_IDLE'
+            return
+        self.say('voice_session', '我没有听清，请再说一遍。', priority=5)
 
     def wait_and_record_by_vad(self) -> bytes:
         frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
@@ -264,7 +284,7 @@ class VoiceSessionNode(Node):
         normalized = self.normalize_text(raw_text)
         contains_wake = self.has_wake_phrase(normalized)
         command = self.strip_wake_phrase(normalized) if contains_wake else normalized
-        if command in ('关闭语音模式', '退出语音模式', '关闭语音', '退出语音'):
+        if command in ('关闭语音模式', '退出语音模式', '停止语音模式', '关闭语音', '退出语音', '关机', '关闭'):
             self.stop_session('语音模式已关闭。', say=True)
             return
 

@@ -10,10 +10,11 @@ from std_msgs.msg import String
 from ylhb_interfaces.msg import SayText, TaskStatus
 
 
-CONFIRM_WORDS = ('确认', '确定', '就这个', '开始取货', '帮我拿这个')
+CONFIRM_WORDS = ('确认', '确定', '就这个', '我要这个', '开始取货', '帮我拿这个')
 MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
-SAFETY_WORDS = ('急停', '停止', '停下', '刹车')
-CANCEL_WORDS = ('取消任务', '取消', '算了', '不要了', '不买了')
+SAFETY_WORDS = ('急停', '停止', '停下', '别动', '刹车')
+VOICE_CLOSE_WORDS = ('关闭语音模式', '退出语音模式', '停止语音模式', '关闭语音', '退出语音', '关机', '关闭')
+CANCEL_WORDS = ('取消任务', '取消当前任务', '不要了')
 CHECKOUT_WORDS = ('多少钱', '结算', '总价', '一共', '付款')
 MOTION_WORDS = ('前进', '后退', '左转', '右转')
 
@@ -87,11 +88,17 @@ class VoiceCommandRouterNode(Node):
             return
         self.remember_utterance(dedupe_key)
 
+        if self.is_close_voice_session(text):
+            self.publish_text_command(text, event, 'voice_close')
+            self.say('voice_router', '已关闭语音模式。', priority=7)
+            return
         if self.contains_any(text, SAFETY_WORDS):
             self.publish_text_command(text, event, 'global_safety')
+            self.say('voice_router', '已停止。', priority=8)
             return
         if self.contains_any(text, CANCEL_WORDS):
             self.publish_text_command(text, event, 'global_cancel')
+            self.say('voice_router', '已取消当前任务。', priority=7)
             return
         if self.contains_any(text, CHECKOUT_WORDS):
             self.publish_text_command(text, event, 'checkout')
@@ -170,6 +177,9 @@ class VoiceCommandRouterNode(Node):
 
     def contains_any(self, text: str, words: tuple) -> bool:
         return any(word in text for word in words)
+
+    def is_close_voice_session(self, text: str) -> bool:
+        return any(word == text or word in text for word in VOICE_CLOSE_WORDS)
 
     def is_confirm(self, text: str) -> bool:
         return any(word in text for word in CONFIRM_WORDS)

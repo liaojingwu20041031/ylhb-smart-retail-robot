@@ -17,7 +17,14 @@ from .qwen_client import QwenClient, QwenClientError
 
 
 TASK_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
-CONFIRM_WORDS = ('确认', '确定', '就这个', '开始取货', '帮我拿这个')
+CONFIRM_WORDS = ('确认', '确定', '就这个', '我要这个', '开始取货', '帮我拿这个')
+WEAK_CONFIRM_WORDS = ('是', '对', '好', '可以', '嗯')
+NEGATIVE_WORDS = ('不需要', '不用', '不要', '算了')
+MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
+WAIT_CONFIRM_PRODUCT = 'confirm_product'
+WAIT_CHOOSE_ALTERNATIVE = 'choose_alternative'
+WAIT_ASK_ADDON = 'ask_addon'
+WAIT_CLARIFY_PRODUCT = 'clarify_product'
 
 
 def workspace_path(*parts: str) -> str:
@@ -56,6 +63,15 @@ class RetailTaskNode(Node):
         self.declare_parameter('request_timeout_sec', 5.0)
         self.declare_parameter('vision_timeout_sec', 10.0)
         self.declare_parameter('publish_raw_json', True)
+        self.declare_parameter('fast_classifier_model', 'qwen3.6-flash')
+        self.declare_parameter('classifier_timeout_sec', 4.0)
+        self.declare_parameter('enable_fast_sales_classifier', True)
+        self.declare_parameter('classifier_confidence_threshold', 0.72)
+        self.declare_parameter('enable_plus_fallback', True)
+        self.declare_parameter('plus_fallback_confidence_threshold', 0.62)
+        self.declare_parameter('sales_reply_min_chars', 90)
+        self.declare_parameter('sales_reply_max_chars', 180)
+        self.declare_parameter('voice_requires_confirmation', True)
 
         products_file = self.get_parameter('products_file').value
         self.catalog = ProductCatalog.from_yaml(products_file)
@@ -65,6 +81,15 @@ class RetailTaskNode(Node):
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.vision_timeout_sec = float(self.get_parameter('vision_timeout_sec').value)
         self.publish_raw_json = bool(self.get_parameter('publish_raw_json').value)
+        self.fast_classifier_model = str(self.get_parameter('fast_classifier_model').value)
+        self.classifier_timeout_sec = float(self.get_parameter('classifier_timeout_sec').value)
+        self.enable_fast_sales_classifier = bool(self.get_parameter('enable_fast_sales_classifier').value)
+        self.classifier_confidence_threshold = float(self.get_parameter('classifier_confidence_threshold').value)
+        self.enable_plus_fallback = bool(self.get_parameter('enable_plus_fallback').value)
+        self.plus_fallback_confidence_threshold = float(self.get_parameter('plus_fallback_confidence_threshold').value)
+        self.sales_reply_min_chars = int(self.get_parameter('sales_reply_min_chars').value)
+        self.sales_reply_max_chars = int(self.get_parameter('sales_reply_max_chars').value)
+        self.voice_requires_confirmation = bool(self.get_parameter('voice_requires_confirmation').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.task_image_dir = os.path.expanduser(str(self.get_parameter('task_image_dir').value))
         self.system_mode = 'ready'
@@ -242,6 +267,10 @@ class RetailTaskNode(Node):
         parsed = self.parse_text_command(text)
         intent = parsed.get('intent', 'unknown')
         source = str(command_meta.get('source') or 'text')
+        route = str(command_meta.get('route') or '')
+
+        if route in ('voice_close', 'global_safety'):
+            return
 
         if intent == 'motion':
             return
@@ -252,8 +281,10 @@ class RetailTaskNode(Node):
             return
 
         if intent == 'cancel' and self.sales_dialogue.get('active'):
+            self.handle_negative_or_cancel(task_id, text)
+            return
+        if route == 'global_cancel':
             self.clear_sales_dialogue()
-            self.say(task_id, '好的，已取消本次选购。', priority=6)
             return
 
         if self.system_mode in ('sleep', 'mapping', 'fault'):
@@ -271,20 +302,48 @@ class RetailTaskNode(Node):
             self.clear_sales_dialogue()
 
         if self.is_confirm_text(text):
-            product = self.catalog.get(str(self.sales_dialogue.get('last_product_id') or ''))
-            if product is None or self.sales_dialogue.get('state') != 'awaiting_confirmation':
-                self.say(task_id, '当前没有待确认商品，请先说出您的需求。', priority=6)
-                return
-            self.clear_sales_dialogue()
-            self.execute_b2_pick(
-                task_id,
-                product,
-                text,
-                'voice_confirm' if source == 'voice' else 'text_confirm',
-                self.safe_float(command_meta.get('confidence'), 0.95),
-                command_meta,
-            )
+            self.handle_confirm(task_id, text, command_meta)
             return
+
+        if self.is_weak_confirm_text(text) and self.sales_dialogue.get('active'):
+            self.handle_weak_confirm(task_id)
+            return
+
+        if self.is_negative_text(text):
+            self.handle_negative_or_cancel(task_id, text)
+            return
+
+        if self.is_modify_text(text):
+            decision = self.modify_current_proposal()
+            if decision is not None:
+                self.handle_sales_decision(task_id, text, decision, command_meta)
+            else:
+                self.say(task_id, '您可以重新说明想要的商品类型，我再为您推荐。', priority=6)
+            return
+
+        fast_decision = self.try_local_fast_sales_decision(text, command_meta)
+        if fast_decision is not None:
+            self.handle_sales_decision(task_id, text, fast_decision, command_meta)
+            return
+
+        if self.enable_fast_sales_classifier and self.qwen.available():
+            try:
+                category = self.qwen.classify_sales_category(
+                    text=text,
+                    model=self.fast_classifier_model,
+                    timeout_sec=self.classifier_timeout_sec,
+                    dialogue=self.sales_dialogue_payload(current_source=source),
+                )
+                decision = self.decision_from_category(text, category, command_meta)
+                if decision is not None:
+                    self.handle_sales_decision(task_id, text, decision, command_meta)
+                    return
+                conf = self.safe_float(category.get('confidence'), 0.0)
+                if not self.enable_plus_fallback or conf >= self.plus_fallback_confidence_threshold:
+                    self.say(task_id, self.reply_for_unclear_category(category), priority=6)
+                    return
+            except QwenClientError as exc:
+                self.get_logger().warn(f'Flash sales classifier failed: {exc}')
 
         if not self.qwen.available():
             self.handle_sales_fallback(task_id, text, command_meta)
@@ -296,7 +355,7 @@ class RetailTaskNode(Node):
                 model=self.chat_model,
                 timeout_sec=self.request_timeout_sec,
                 products=self.sales_products_payload(),
-                dialogue=self.sales_dialogue_payload(),
+                dialogue=self.sales_dialogue_payload(current_source=source),
             )
         except QwenClientError as exc:
             self.get_logger().warn(f'LLM sales dialogue failed: {exc}')
@@ -352,6 +411,433 @@ class RetailTaskNode(Node):
             return
         self.say(task_id, '云端理解失败，请直接说出商品名称，例如可乐、矿泉水或纸巾。', priority=7)
 
+    def handle_confirm(self, task_id: str, text: str, command_meta: Dict[str, Any]) -> None:
+        product_id = str(
+            self.sales_dialogue.get('pending_product_id')
+            or self.sales_dialogue.get('last_product_id')
+            or ''
+        )
+        product = self.catalog.get(product_id)
+        waiting_for = str(self.sales_dialogue.get('waiting_for') or '')
+        if product is None or self.sales_dialogue.get('state') != 'awaiting_confirmation':
+            self.say(task_id, '当前没有待确认商品，请先说出您的需求。', priority=6)
+            return
+        if waiting_for and waiting_for != WAIT_CONFIRM_PRODUCT:
+            self.say(task_id, '请先完成当前问题，或者说取消。', priority=6)
+            return
+        self.clear_sales_dialogue()
+        self.execute_b2_pick(
+            task_id,
+            product,
+            text,
+            'voice_confirm' if command_meta.get('source') == 'voice' else 'text_confirm',
+            self.safe_float(command_meta.get('confidence'), 0.95),
+            command_meta,
+        )
+
+    def handle_negative_or_cancel(self, task_id: str, text: str) -> None:
+        waiting_for = str(self.sales_dialogue.get('waiting_for') or '')
+        product = self.catalog.get(str(self.sales_dialogue.get('pending_product_id') or self.sales_dialogue.get('last_product_id') or ''))
+        if waiting_for == WAIT_ASK_ADDON and product is not None:
+            decision = self.build_propose_decision(
+                product=product,
+                alternatives=self.products_from_related(self.sales_dialogue.get('related_products') or []),
+                need=str(self.sales_dialogue.get('need') or 'unknown'),
+                reason='用户不需要搭配，保留当前主商品。',
+                reply=f'好的，那只为您保留{product.name}。请说“确认”开始取货，或说“换一个”重新选择。',
+                confidence=0.95,
+            )
+            self.update_sales_dialogue(text, decision, state='awaiting_confirmation', waiting_for=WAIT_CONFIRM_PRODUCT)
+            self.say(task_id, decision['reply_cn'], priority=6)
+            return
+        if self.sales_dialogue.get('active'):
+            self.clear_sales_dialogue()
+            self.say(task_id, '好的，已取消当前推荐。您可以重新说出需求。', priority=6)
+            return
+        self.say(task_id, '好的，您可以重新说明需要什么。', priority=5)
+
+    def handle_weak_confirm(self, task_id: str) -> None:
+        waiting_for = str(self.sales_dialogue.get('waiting_for') or '')
+        product = self.catalog.get(str(self.sales_dialogue.get('pending_product_id') or self.sales_dialogue.get('last_product_id') or ''))
+        if waiting_for == WAIT_ASK_ADDON and product is not None:
+            self.say(task_id, f'可以，我可以继续推荐搭配；主商品仍保留{product.name}。如果要开始取货，请说“确认”。', priority=6)
+            return
+        if waiting_for == WAIT_CONFIRM_PRODUCT and product is not None:
+            self.say(task_id, f'如果需要{product.name}，请说“确认”开始取货。', priority=6)
+            return
+        self.say(task_id, '请直接说商品名，或者说“确认”开始取货。', priority=5)
+
+    def try_local_fast_sales_decision(
+        self,
+        text: str,
+        command_meta: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        source = str(command_meta.get('source') or 'text')
+        normalized = self.normalize_cn(text)
+        product = self.catalog.match_text(normalized)
+        if product is not None:
+            if source == 'voice' and self.voice_requires_confirmation:
+                return self.build_propose_decision(
+                    product=product,
+                    alternatives=[],
+                    need='explicit_product',
+                    reason='本地商品别名命中。',
+                    reply=self.build_sales_reply(
+                        need_text='已经明确说出了商品',
+                        product=product,
+                        alternatives=[],
+                        reason=f'{product.name}是当前可选商品，可以为您提取',
+                    ),
+                    confidence=0.96,
+                )
+            return self.build_execute_decision(product, confidence=0.96)
+
+        if any(k in normalized for k in ('口渴', '喝水', '渴了', '想喝水', '解渴')):
+            return self.decision_by_need_category('thirsty', normalized)
+        if any(k in normalized for k in ('饿', '吃东西', '零食', '解馋')):
+            return self.decision_by_need_category('hungry', normalized)
+        if any(k in normalized for k in ('困了', '没精神', '提神')):
+            return self.decision_by_need_category('sleepy', normalized)
+        if any(k in normalized for k in ('生活用品', '日用品')):
+            return self.decision_by_need_category('daily_goods', normalized)
+        if any(k in normalized for k in ('擦嘴', '纸巾', '抽纸', '擦东西', '弄脏', '清洁')):
+            return self.decision_by_need_category('tissue', normalized)
+        return None
+
+    def decision_from_category(
+        self,
+        text: str,
+        category: Dict[str, Any],
+        command_meta: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        del command_meta
+        action = str(category.get('dialogue_action') or 'unknown')
+        need = str(category.get('need_category') or 'unknown')
+        product_mention = str(category.get('product_mention') or '').strip()
+        confidence = self.safe_float(category.get('confidence'), 0.0)
+        if confidence < self.classifier_confidence_threshold:
+            return None
+
+        if action == 'ask_catalog':
+            return {
+                'task': 'b2_sales',
+                'action': 'ask_clarification',
+                'primary_product_id': '',
+                'primary_product_name': '',
+                'related_products': [],
+                'reply_cn': self.catalog_intro_reply(),
+                'confidence': confidence,
+                'requires_confirmation': False,
+                'reason_cn': '用户询问商品范围。',
+                'waiting_for': WAIT_CLARIFY_PRODUCT,
+            }
+        if action == 'cancel':
+            return {
+                'task': 'b2_sales',
+                'action': 'cancel',
+                'reply_cn': '好的，已取消当前推荐。您可以重新说出需求。',
+                'confidence': confidence,
+                'requires_confirmation': False,
+                'reason_cn': '用户取消选购。',
+            }
+        if action == 'modify':
+            return self.modify_current_proposal_by_category(category)
+        if product_mention:
+            product = self.catalog.match_text(product_mention)
+            if product is not None:
+                return self.build_propose_decision(
+                    product=product,
+                    alternatives=[],
+                    need=need,
+                    reason=str(category.get('reason_cn') or '用户明确提到商品。'),
+                    reply=self.build_sales_reply(
+                        need_text='已经明确说出了商品',
+                        product=product,
+                        alternatives=[],
+                        reason=f'{product.name}符合您的当前需求',
+                    ),
+                    confidence=confidence,
+                )
+            return {
+                'task': 'b2_sales',
+                'action': 'ask_clarification',
+                'reply_cn': f'我不太确定您说的“{product_mention}”是哪件商品，请重新说商品名。',
+                'confidence': confidence,
+                'requires_confirmation': False,
+                'reason_cn': '商品提及未命中商品库。',
+                'waiting_for': WAIT_CLARIFY_PRODUCT,
+            }
+        if action == 'recommend':
+            return self.decision_by_need_category(
+                need,
+                text,
+                positive_constraints=category.get('positive_constraints') or [],
+                negative_constraints=category.get('negative_constraints') or [],
+                confidence=confidence,
+            )
+        return None
+
+    def decision_by_need_category(
+        self,
+        need_category: str,
+        text: str,
+        positive_constraints: Optional[List[str]] = None,
+        negative_constraints: Optional[List[str]] = None,
+        confidence: float = 0.9,
+    ) -> Optional[Dict[str, Any]]:
+        del text
+        positive_constraints = positive_constraints or []
+        negative_constraints = negative_constraints or []
+        candidates = self.rank_products_for_category(need_category, positive_constraints, negative_constraints)
+        if not candidates:
+            return None
+        primary = candidates[0]
+        alternatives = candidates[1:3]
+        reply = self.build_sales_reply(
+            need_text=self.need_text_cn(need_category),
+            product=primary,
+            alternatives=alternatives,
+            reason=self.product_reason_for_need(primary, need_category, positive_constraints, negative_constraints),
+        )
+        return self.build_propose_decision(
+            product=primary,
+            alternatives=alternatives,
+            need=need_category,
+            reason=f'按类别 {need_category} 和约束快速推荐。',
+            reply=reply,
+            confidence=confidence,
+        )
+
+    def rank_products_for_category(
+        self,
+        need_category: str,
+        positive_constraints: List[str],
+        negative_constraints: List[str],
+    ) -> List[Product]:
+        scored: List[Tuple[float, Product]] = []
+        rejected = set(str(v) for v in self.sales_dialogue.get('rejected_product_ids', []) if v)
+        for product in self.catalog.products:
+            score = float(product.priority_for_intents.get(need_category, 0.0))
+            text_blob = ' '.join(
+                [product.name, product.category]
+                + list(product.aliases)
+                + list(product.selling_points)
+                + list(product.suitable_needs)
+            )
+
+            if need_category == 'daily_goods' and product.category in ('tissue', 'hygiene'):
+                score += 70
+            if need_category == 'thirsty' and product.category in ('water', 'milk', 'soda'):
+                score += 40
+            if need_category == 'hungry' and product.category in ('snack', 'fruit', 'milk_drink'):
+                score += 40
+            if need_category == 'snack' and product.category == 'snack':
+                score += 40
+            if need_category == 'drink' and product.category in ('water', 'milk', 'soda', 'milk_drink', 'energy_drink', 'coffee'):
+                score += 30
+            if need_category in ('sleepy', 'energy') and product.category in ('coffee', 'energy_drink'):
+                score += 40
+            if need_category in ('tissue', 'clean') and product.category == 'tissue':
+                score += 60
+
+            if 'cheap' in positive_constraints and product.price <= 3:
+                score += 20
+            if 'non_carbonated' in positive_constraints and product.category not in ('soda', 'energy_drink'):
+                score += 20
+            if 'healthy' in positive_constraints and product.category in ('water', 'fruit', 'milk'):
+                score += 20
+            if 'sweet' in positive_constraints and any(k in text_blob for k in ('甜', '奶', '饼干')):
+                score += 15
+            if 'salty' in positive_constraints and any(k in text_blob for k in ('咸', '薯片', '瓜子')):
+                score += 15
+            if 'filling' in positive_constraints and any(k in text_blob for k in ('饱', '饼干', '营养')):
+                score += 15
+
+            if 'carbonated' in negative_constraints and product.category == 'soda':
+                score -= 100
+            if 'expensive' in negative_constraints and product.price >= 6:
+                score -= 20
+            if 'sweet' in negative_constraints and any(k in text_blob for k in ('甜', '奶', '饼干')):
+                score -= 20
+            if product.id in rejected:
+                score -= 50
+
+            if score > 0:
+                scored.append((score, product))
+        scored.sort(key=lambda item: (-item[0], item[1].price))
+        return [product for _score, product in scored]
+
+    def build_sales_reply(
+        self,
+        need_text: str,
+        product: Product,
+        alternatives: List[Product],
+        reason: str,
+    ) -> str:
+        alt_text = ''
+        if alternatives:
+            alt_names = '、'.join(p.name for p in alternatives[:2])
+            alt_text = f' 如果您想换一种，也可以考虑{alt_names}。'
+        reply = (
+            f'我理解您现在是{need_text}。'
+            f'我主推{product.name}，因为{reason}。'
+            f'{alt_text}'
+            f' 需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
+        )
+        return self.polish_sales_reply_length(reply)
+
+    def polish_sales_reply_length(self, reply: str) -> str:
+        if len(reply) < self.sales_reply_min_chars:
+            reply += ' 我会先为您保留这个推荐，确认后才会开始取货。'
+        if len(reply) > self.sales_reply_max_chars:
+            replacements = (
+                ('比较适合', '适合'),
+                ('如果您想要', '如果想'),
+                ('我会先为您保留这个推荐，确认后才会开始取货。', ''),
+            )
+            for old, new in replacements:
+                reply = reply.replace(old, new)
+        if len(reply) > self.sales_reply_max_chars:
+            confirm = ' 请说“确认”开始取货，或说“换一个”。'
+            reply = reply[: max(0, self.sales_reply_max_chars - len(confirm))].rstrip('，。；; ')
+            reply += confirm
+        return reply
+
+    def build_propose_decision(
+        self,
+        product: Product,
+        alternatives: List[Product],
+        need: str,
+        reason: str,
+        reply: str,
+        confidence: float,
+    ) -> Dict[str, Any]:
+        return {
+            'task': 'b2_sales',
+            'action': 'propose_product',
+            'need': need,
+            'primary_product_id': product.id,
+            'primary_product_name': product.name,
+            'related_products': [
+                {
+                    'product_id': item.id,
+                    'product_name': item.name,
+                    'reason_cn': self.product_reason_for_need(item, need, [], []),
+                }
+                for item in alternatives[:2]
+            ],
+            'reply_cn': reply,
+            'confidence': confidence,
+            'requires_confirmation': True,
+            'reason_cn': reason,
+            'waiting_for': WAIT_CONFIRM_PRODUCT,
+        }
+
+    def build_execute_decision(self, product: Product, confidence: float) -> Dict[str, Any]:
+        return {
+            'task': 'b2_sales',
+            'action': 'execute_pick',
+            'primary_product_id': product.id,
+            'primary_product_name': product.name,
+            'related_products': [],
+            'reply_cn': f'好的，为您提取{product.name}。',
+            'confidence': confidence,
+            'requires_confirmation': False,
+            'reason_cn': '本地商品别名命中。',
+        }
+
+    def modify_current_proposal(self) -> Optional[Dict[str, Any]]:
+        related = self.products_from_related(self.sales_dialogue.get('related_products') or [])
+        if related:
+            primary = related[0]
+            alternatives = related[1:]
+            reply = self.build_sales_reply(
+                need_text=self.need_text_cn(str(self.sales_dialogue.get('need') or 'unknown')),
+                product=primary,
+                alternatives=alternatives,
+                reason=self.product_reason_for_need(primary, str(self.sales_dialogue.get('need') or 'unknown'), [], []),
+            )
+            return self.build_propose_decision(
+                product=primary,
+                alternatives=alternatives,
+                need=str(self.sales_dialogue.get('need') or 'unknown'),
+                reason='用户要求换一个，从备选商品中重新推荐。',
+                reply=reply,
+                confidence=0.9,
+            )
+        need = str(self.sales_dialogue.get('need') or '')
+        if need:
+            return self.decision_by_need_category(need, '')
+        return None
+
+    def modify_current_proposal_by_category(self, category: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        positive = list(category.get('positive_constraints') or [])
+        negative = list(category.get('negative_constraints') or [])
+        need = str(category.get('need_category') or self.sales_dialogue.get('need') or 'unknown')
+        if need != 'unknown' or positive or negative:
+            decision = self.decision_by_need_category(
+                need,
+                '',
+                positive_constraints=positive,
+                negative_constraints=negative,
+                confidence=self.safe_float(category.get('confidence'), 0.8),
+            )
+            if decision is not None:
+                return decision
+        return self.modify_current_proposal()
+
+    def products_from_related(self, related: List[Dict[str, Any]]) -> List[Product]:
+        products: List[Product] = []
+        for item in related:
+            if not isinstance(item, dict):
+                continue
+            product = self.catalog.get(str(item.get('product_id') or ''))
+            if product is not None:
+                products.append(product)
+        return products
+
+    def need_text_cn(self, need_category: str) -> str:
+        return {
+            'thirsty': '有点口渴，想喝点东西',
+            'drink': '想喝饮品',
+            'hungry': '有点饿，想吃点东西',
+            'snack': '想吃零食',
+            'fruit': '想吃清爽健康的水果',
+            'nutrition': '想补充营养',
+            'energy': '想提神补充能量',
+            'sleepy': '有点困，需要提神',
+            'hygiene': '需要洗漱护理用品',
+            'tissue': '需要纸巾或清洁用品',
+            'clean': '需要清洁用品',
+            'daily_goods': '需要日常生活用品',
+            'explicit_product': '已经明确说出了商品',
+        }.get(need_category, '想选一件合适的商品')
+
+    def product_reason_for_need(
+        self,
+        product: Product,
+        need_category: str,
+        positive_constraints: List[str],
+        negative_constraints: List[str],
+    ) -> str:
+        del need_category, positive_constraints, negative_constraints
+        if product.selling_points:
+            return '、'.join(product.selling_points[:2])
+        return f'它适合当前需求，价格{self.format_price(product.price)}元'
+
+    def catalog_intro_reply(self) -> str:
+        return '我这里有饮料、矿泉水、牛奶、零食、水果和生活用品。您可以说“我口渴了”“我有点饿”或者直接说商品名。'
+
+    def reply_for_unclear_category(self, category: Dict[str, Any]) -> str:
+        reason = str(category.get('reason_cn') or '').strip()
+        if reason:
+            return f'我还不太确定您的需求，{reason}。请直接说商品名，或者说您想喝、想吃还是要生活用品。'
+        return '我还不太确定您的需求。请直接说商品名，或者说您想喝、想吃还是要生活用品。'
+
+    def normalize_cn(self, text: str) -> str:
+        table = str.maketrans('', '', ' ，。！？!?、,. ')
+        return text.strip().translate(table)
+
     def handle_sales_decision(
         self,
         task_id: str,
@@ -387,15 +873,30 @@ class RetailTaskNode(Node):
 
         if action == 'propose_product':
             if product is None:
-                self.update_sales_dialogue(text, decision, state='asking_clarification')
+                self.update_sales_dialogue(
+                    text,
+                    decision,
+                    state='asking_clarification',
+                    waiting_for=str(decision.get('waiting_for') or WAIT_CLARIFY_PRODUCT),
+                )
                 self.say(task_id, reply or '我理解了您的需求，但还不能确定商品，请再说明一下。', priority=6)
                 return
-            self.update_sales_dialogue(text, decision, state='awaiting_confirmation')
+            self.update_sales_dialogue(
+                text,
+                decision,
+                state='awaiting_confirmation',
+                waiting_for=str(decision.get('waiting_for') or WAIT_CONFIRM_PRODUCT),
+            )
             self.say(task_id, reply or self.default_proposal_reply(product), priority=7)
             return
 
         if action == 'ask_clarification':
-            self.update_sales_dialogue(text, decision, state='asking_clarification')
+            self.update_sales_dialogue(
+                text,
+                decision,
+                state='asking_clarification',
+                waiting_for=str(decision.get('waiting_for') or WAIT_CLARIFY_PRODUCT),
+            )
             self.say(task_id, reply or '请问您想购买哪一类商品？', priority=7)
             return
 
@@ -452,9 +953,14 @@ class RetailTaskNode(Node):
             'last_action': '',
             'last_product_id': '',
             'last_product_name': '',
+            'pending_product_id': '',
+            'pending_product_name': '',
+            'waiting_for': '',
+            'proposal_id': '',
             'need': '',
             'related_products': [],
             'pending_proposal': {},
+            'constraints': {},
             'rejected_product_ids': [],
             'last_reply': '',
             'expires_at': 0.0,
@@ -474,7 +980,13 @@ class RetailTaskNode(Node):
         self.sales_dialogue['rejected_product_ids'] = sorted(rejected)
         self.publish_sales_dialogue_status()
 
-    def update_sales_dialogue(self, text: str, decision: Dict[str, Any], state: str) -> None:
+    def update_sales_dialogue(
+        self,
+        text: str,
+        decision: Dict[str, Any],
+        state: str,
+        waiting_for: str = '',
+    ) -> None:
         action = str(decision.get('action') or 'unknown')
         product = self.product_from_decision(decision)
         related = self.related_products_from_decision(decision, exclude_id=product.id if product else '')
@@ -490,6 +1002,7 @@ class RetailTaskNode(Node):
             product is not None and product.id != self.sales_dialogue.get('last_product_id')
         ):
             rejected.append(str(self.sales_dialogue.get('last_product_id')))
+        proposal_id = f"proposal_{int(time.time() * 1000)}" if product is not None and state == 'awaiting_confirmation' else ''
 
         self.sales_dialogue = {
             'active': state in ('awaiting_confirmation', 'asking_clarification'),
@@ -498,14 +1011,22 @@ class RetailTaskNode(Node):
             'last_action': action,
             'last_product_id': product.id if product is not None else '',
             'last_product_name': product.name if product is not None else '',
+            'pending_product_id': product.id if product is not None and state == 'awaiting_confirmation' else '',
+            'pending_product_name': product.name if product is not None and state == 'awaiting_confirmation' else '',
+            'waiting_for': waiting_for or (WAIT_CONFIRM_PRODUCT if product is not None and state == 'awaiting_confirmation' else ''),
+            'proposal_id': proposal_id,
             'need': str(decision.get('need') or self.sales_dialogue.get('need') or ''),
             'related_products': related,
             'pending_proposal': {
                 'main_product': product_to_dict(product) if product is not None else None,
                 'alternatives': related,
                 'reason': str(decision.get('reason_cn') or ''),
+                'status': 'waiting_confirm',
+                'source': 'voice' if decision.get('requires_confirmation') else '',
+                'proposal_id': proposal_id,
                 'constraints': dict(decision.get('constraints') or {}),
             } if product is not None and state == 'awaiting_confirmation' else {},
+            'constraints': dict(decision.get('constraints') or {}),
             'rejected_product_ids': sorted(set(rejected)),
             'last_reply': reply,
             'expires_at': time.time() + 120.0 if state in ('awaiting_confirmation', 'asking_clarification') else 0.0,
@@ -522,6 +1043,10 @@ class RetailTaskNode(Node):
             'primary_product_id': product.id if product is not None else '',
             'primary_product_name': product.name if product is not None else '',
             'primary_price': product.price if product is not None else 0.0,
+            'pending_product_id': str(self.sales_dialogue.get('pending_product_id') or ''),
+            'pending_product_name': str(self.sales_dialogue.get('pending_product_name') or ''),
+            'waiting_for': str(self.sales_dialogue.get('waiting_for') or ''),
+            'proposal_id': str(self.sales_dialogue.get('proposal_id') or ''),
             'related_products': self.sales_dialogue.get('related_products') or [],
             'pending_proposal': self.sales_dialogue.get('pending_proposal') or {},
             'last_reply': str(self.sales_dialogue.get('last_reply') or ''),
@@ -530,17 +1055,22 @@ class RetailTaskNode(Node):
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.sales_status_pub.publish(msg)
 
-    def sales_dialogue_payload(self) -> Dict[str, Any]:
+    def sales_dialogue_payload(self, current_source: str = '') -> Dict[str, Any]:
         return {
             'active': bool(self.sales_dialogue.get('active')),
             'state': str(self.sales_dialogue.get('state') or 'idle'),
+            'waiting_for': str(self.sales_dialogue.get('waiting_for') or ''),
+            'current_source': current_source,
             'conversation_history': list(self.sales_dialogue.get('history') or []),
             'last_action': str(self.sales_dialogue.get('last_action') or ''),
             'last_product_id': str(self.sales_dialogue.get('last_product_id') or ''),
             'last_product_name': str(self.sales_dialogue.get('last_product_name') or ''),
+            'pending_product_id': str(self.sales_dialogue.get('pending_product_id') or ''),
+            'pending_product_name': str(self.sales_dialogue.get('pending_product_name') or ''),
             'need': str(self.sales_dialogue.get('need') or ''),
             'related_products': list(self.sales_dialogue.get('related_products') or []),
             'pending_proposal': dict(self.sales_dialogue.get('pending_proposal') or {}),
+            'constraints': dict(self.sales_dialogue.get('constraints') or {}),
             'rejected_product_ids': list(self.sales_dialogue.get('rejected_product_ids') or []),
         }
 
@@ -618,6 +1148,18 @@ class RetailTaskNode(Node):
     def is_confirm_text(self, text: str) -> bool:
         normalized = text.strip().replace(' ', '').replace('，', '').replace('。', '')
         return any(word in normalized for word in CONFIRM_WORDS)
+
+    def is_weak_confirm_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return normalized in WEAK_CONFIRM_WORDS
+
+    def is_negative_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return any(word in normalized for word in NEGATIVE_WORDS)
+
+    def is_modify_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return any(word in normalized for word in MODIFY_WORDS)
 
     def localized_objects_callback(self, msg: String) -> None:
         try:

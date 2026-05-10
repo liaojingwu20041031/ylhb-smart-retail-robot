@@ -17,6 +17,7 @@ from .qwen_client import QwenClient, QwenClientError
 
 
 TASK_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
+CONFIRM_WORDS = ('确认', '确定', '就这个', '开始取货', '帮我拿这个')
 
 
 def workspace_path(*parts: str) -> str:
@@ -74,6 +75,7 @@ class RetailTaskNode(Node):
         self.latest_detected_updated_at = 0.0
         self.pending_tasks: Dict[str, Dict[str, Any]] = {}
         self.completed_task_ids = set()
+        self.executed_task_request_ids = set()
         self.cart_items: Dict[str, Dict[str, Any]] = {}
         self.sales_dialogue: Dict[str, Any] = self.default_sales_dialogue()
 
@@ -232,12 +234,14 @@ class RetailTaskNode(Node):
         return candidates[0], ''
 
     def text_command_callback(self, msg: String) -> None:
-        text = msg.data.strip()
+        text, command_meta = self.parse_text_command_message(msg.data)
         if not text:
             return
-        task_id = self.new_task_id('text')
+        task_request_id = str(command_meta.get('task_request_id') or '').strip()
+        task_id = task_request_id or self.new_task_id('text')
         parsed = self.parse_text_command(text)
         intent = parsed.get('intent', 'unknown')
+        source = str(command_meta.get('source') or 'text')
 
         if intent == 'motion':
             return
@@ -266,8 +270,24 @@ class RetailTaskNode(Node):
         if self.sales_dialogue_expired():
             self.clear_sales_dialogue()
 
+        if self.is_confirm_text(text):
+            product = self.catalog.get(str(self.sales_dialogue.get('last_product_id') or ''))
+            if product is None or self.sales_dialogue.get('state') != 'awaiting_confirmation':
+                self.say(task_id, '当前没有待确认商品，请先说出您的需求。', priority=6)
+                return
+            self.clear_sales_dialogue()
+            self.execute_b2_pick(
+                task_id,
+                product,
+                text,
+                'voice_confirm' if source == 'voice' else 'text_confirm',
+                self.safe_float(command_meta.get('confidence'), 0.95),
+                command_meta,
+            )
+            return
+
         if not self.qwen.available():
-            self.handle_sales_fallback(task_id, text)
+            self.handle_sales_fallback(task_id, text, command_meta)
             return
 
         try:
@@ -280,9 +300,22 @@ class RetailTaskNode(Node):
             )
         except QwenClientError as exc:
             self.get_logger().warn(f'LLM sales dialogue failed: {exc}')
-            self.handle_sales_fallback(task_id, text)
+            self.handle_sales_fallback(task_id, text, command_meta)
             return
-        self.handle_sales_decision(task_id, text, decision)
+        self.handle_sales_decision(task_id, text, decision, command_meta)
+
+    def parse_text_command_message(self, data: str) -> Tuple[str, Dict[str, Any]]:
+        raw = data.strip()
+        if not raw.startswith('{'):
+            return raw, {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw, {}
+        if not isinstance(payload, dict):
+            return raw, {}
+        text = str(payload.get('text') or '').strip()
+        return text, payload
 
     def parse_text_command(self, text: str) -> Dict[str, Any]:
         checkout_keywords = ('多少钱', '结算', '总价', '一共', '付款')
@@ -296,19 +329,48 @@ class RetailTaskNode(Node):
             return {'intent': 'cancel', 'confidence': 1.0}
         return {'intent': 'unknown', 'confidence': 0.0}
 
-    def handle_sales_fallback(self, task_id: str, text: str) -> None:
+    def handle_sales_fallback(self, task_id: str, text: str, command_meta: Optional[Dict[str, Any]] = None) -> None:
+        command_meta = command_meta or {}
         product = self.catalog.match_text(text)
         if product is not None:
+            if command_meta.get('source') == 'voice':
+                decision = {
+                    'action': 'propose_product',
+                    'primary_product_id': product.id,
+                    'primary_product_name': product.name,
+                    'related_products': [],
+                    'reply_cn': self.default_proposal_reply(product),
+                    'confidence': 0.75,
+                    'requires_confirmation': True,
+                    'reason_cn': '本地商品名兜底匹配，需要用户确认后再执行。',
+                }
+                self.update_sales_dialogue(text, decision, state='awaiting_confirmation')
+                self.say(task_id, decision['reply_cn'], priority=7)
+                return
             self.clear_sales_dialogue()
-            self.execute_b2_pick(task_id, product, text, 'local_fallback', 0.8)
+            self.execute_b2_pick(task_id, product, text, 'local_fallback', 0.8, command_meta)
             return
         self.say(task_id, '云端理解失败，请直接说出商品名称，例如可乐、矿泉水或纸巾。', priority=7)
 
-    def handle_sales_decision(self, task_id: str, text: str, decision: Dict[str, Any]) -> None:
+    def handle_sales_decision(
+        self,
+        task_id: str,
+        text: str,
+        decision: Dict[str, Any],
+        command_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        command_meta = command_meta or {}
         action = str(decision.get('action') or 'unknown').strip()
         confidence = self.safe_float(decision.get('confidence'), 0.0)
         product = self.product_from_decision(decision)
         reply = str(decision.get('reply_cn') or '').strip()
+        if command_meta.get('source') == 'voice' and action == 'execute_pick' and not self.is_confirm_text(text):
+            action = 'propose_product'
+            decision['action'] = 'propose_product'
+            decision['requires_confirmation'] = True
+            if product is not None and not reply:
+                decision['reply_cn'] = self.default_proposal_reply(product)
+                reply = decision['reply_cn']
 
         if self.decision_has_unknown_product(decision):
             self.clear_sales_dialogue()
@@ -320,7 +382,7 @@ class RetailTaskNode(Node):
                 self.say(task_id, '我还没有确定要购买的商品，请再说明一下。', priority=6)
                 return
             self.clear_sales_dialogue()
-            self.execute_b2_pick(task_id, product, text, 'llm_sales', confidence or 0.9)
+            self.execute_b2_pick(task_id, product, text, 'llm_sales', confidence or 0.9, command_meta)
             return
 
         if action == 'propose_product':
@@ -352,12 +414,25 @@ class RetailTaskNode(Node):
         raw_text: str,
         source: str,
         confidence: float,
+        command_meta: Optional[Dict[str, Any]] = None,
     ) -> None:
+        command_meta = command_meta or {}
+        task_request_id = str(command_meta.get('task_request_id') or task_id)
+        if task_request_id in self.executed_task_request_ids:
+            self.get_logger().info(f'Ignoring duplicate B-2 task_request_id={task_request_id}')
+            return
+        self.executed_task_request_ids.add(task_request_id)
+        if len(self.executed_task_request_ids) > 100:
+            self.executed_task_request_ids = set(list(self.executed_task_request_ids)[-80:])
         payload = {
             'schema_version': '1.0',
             'task_id': task_id,
+            'task_request_id': task_request_id,
             'timestamp': time.time(),
             'source': source,
+            'command_source': str(command_meta.get('source') or source),
+            'session_id': str(command_meta.get('session_id') or ''),
+            'confirm_utterance_id': str(command_meta.get('utterance_id') or ''),
             'intent': 'pick_item',
             'flow': 'task_b_2',
             'selected_product': product_to_dict(product),
@@ -379,6 +454,7 @@ class RetailTaskNode(Node):
             'last_product_name': '',
             'need': '',
             'related_products': [],
+            'pending_proposal': {},
             'rejected_product_ids': [],
             'last_reply': '',
             'expires_at': 0.0,
@@ -424,6 +500,12 @@ class RetailTaskNode(Node):
             'last_product_name': product.name if product is not None else '',
             'need': str(decision.get('need') or self.sales_dialogue.get('need') or ''),
             'related_products': related,
+            'pending_proposal': {
+                'main_product': product_to_dict(product) if product is not None else None,
+                'alternatives': related,
+                'reason': str(decision.get('reason_cn') or ''),
+                'constraints': dict(decision.get('constraints') or {}),
+            } if product is not None and state == 'awaiting_confirmation' else {},
             'rejected_product_ids': sorted(set(rejected)),
             'last_reply': reply,
             'expires_at': time.time() + 120.0 if state in ('awaiting_confirmation', 'asking_clarification') else 0.0,
@@ -441,6 +523,7 @@ class RetailTaskNode(Node):
             'primary_product_name': product.name if product is not None else '',
             'primary_price': product.price if product is not None else 0.0,
             'related_products': self.sales_dialogue.get('related_products') or [],
+            'pending_proposal': self.sales_dialogue.get('pending_proposal') or {},
             'last_reply': str(self.sales_dialogue.get('last_reply') or ''),
         }
         msg = String()
@@ -457,6 +540,7 @@ class RetailTaskNode(Node):
             'last_product_name': str(self.sales_dialogue.get('last_product_name') or ''),
             'need': str(self.sales_dialogue.get('need') or ''),
             'related_products': list(self.sales_dialogue.get('related_products') or []),
+            'pending_proposal': dict(self.sales_dialogue.get('pending_proposal') or {}),
             'rejected_product_ids': list(self.sales_dialogue.get('rejected_product_ids') or []),
         }
 
@@ -530,6 +614,10 @@ class RetailTaskNode(Node):
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def is_confirm_text(self, text: str) -> bool:
+        normalized = text.strip().replace(' ', '').replace('，', '').replace('。', '')
+        return any(word in normalized for word in CONFIRM_WORDS)
 
     def localized_objects_callback(self, msg: String) -> None:
         try:

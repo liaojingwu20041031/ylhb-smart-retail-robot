@@ -1,0 +1,200 @@
+import json
+import time
+from typing import Any, Dict, Optional
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+from ylhb_interfaces.msg import SayText, TaskStatus
+
+
+CONFIRM_WORDS = ('确认', '确定', '就这个', '开始取货', '帮我拿这个')
+MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
+SAFETY_WORDS = ('急停', '停止', '停下', '刹车')
+CANCEL_WORDS = ('取消任务', '取消', '算了', '不要了', '不买了')
+CHECKOUT_WORDS = ('多少钱', '结算', '总价', '一共', '付款')
+MOTION_WORDS = ('前进', '后退', '左转', '右转')
+
+
+def transient_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+class VoiceCommandRouterNode(Node):
+    def __init__(self) -> None:
+        super().__init__('voice_command_router_node')
+        self.declare_parameter('voice_command_event_topic', '/retail_ai/voice_command_event')
+        self.declare_parameter('text_command_topic', '/retail_ai/text_command')
+        self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
+        self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
+        self.declare_parameter('task_status_topic', '/retail_ai/task_status')
+        self.declare_parameter('say_text_topic', '/retail_ai/say_text')
+
+        self.system_mode = 'ready'
+        self.sales_status: Dict[str, Any] = {}
+        self.recent_utterances = set()
+        self.recent_utterance_order = []
+
+        self.text_pub = self.create_publisher(String, self.get_parameter('text_command_topic').value, 10)
+        self.say_pub = self.create_publisher(SayText, self.get_parameter('say_text_topic').value, 10)
+        self.create_subscription(
+            String,
+            self.get_parameter('voice_command_event_topic').value,
+            self.voice_event_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            self.get_parameter('sales_dialogue_status_topic').value,
+            self.sales_status_callback,
+            transient_qos(),
+        )
+        self.create_subscription(
+            String,
+            self.get_parameter('system_mode_topic').value,
+            self.system_mode_callback,
+            transient_qos(),
+        )
+        self.create_subscription(
+            TaskStatus,
+            self.get_parameter('task_status_topic').value,
+            self.task_status_callback,
+            10,
+        )
+        self.get_logger().info('Voice command router started.')
+
+    def voice_event_callback(self, msg: String) -> None:
+        try:
+            event = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f'Invalid voice command event JSON: {exc}')
+            return
+        text = self.normalize_text(str(event.get('text') or ''))
+        if not text:
+            return
+        utterance_id = str(event.get('utterance_id') or '')
+        session_id = str(event.get('session_id') or '')
+        dedupe_key = f'{session_id}:{utterance_id}'
+        if dedupe_key in self.recent_utterances:
+            self.get_logger().info(f'Ignoring duplicate voice utterance: {dedupe_key}')
+            return
+        self.remember_utterance(dedupe_key)
+
+        if self.contains_any(text, SAFETY_WORDS):
+            self.publish_text_command(text, event, 'global_safety')
+            return
+        if self.contains_any(text, CANCEL_WORDS):
+            self.publish_text_command(text, event, 'global_cancel')
+            return
+        if self.contains_any(text, CHECKOUT_WORDS):
+            self.publish_text_command(text, event, 'checkout')
+            return
+        if self.contains_any(text, MOTION_WORDS):
+            self.publish_text_command(text, event, 'task_a_motion')
+            return
+
+        sales_state = str(self.sales_status.get('state') or 'idle')
+        has_pending = bool(self.sales_status.get('primary_product_id')) and sales_state == 'awaiting_confirmation'
+        if self.is_confirm(text) and not has_pending:
+            self.say('voice_router', '当前没有待确认商品，请先说出您的需求。', priority=6)
+            return
+
+        if self.system_mode == 'running':
+            self.say('voice_router', '当前正在执行任务，请等待完成，或说取消任务。', priority=6)
+            return
+
+        route = 'b2_confirm' if self.is_confirm(text) else 'b2_sales'
+        self.publish_text_command(text, event, route)
+
+    def publish_text_command(self, text: str, event: Dict[str, Any], route: str) -> None:
+        command = {
+            'schema_version': '1.0',
+            'source': 'voice',
+            'route': route,
+            'session_id': str(event.get('session_id') or ''),
+            'utterance_id': str(event.get('utterance_id') or ''),
+            'text': text,
+            'raw_asr_text': str(event.get('raw_asr_text') or text),
+            'awakened': bool(event.get('awakened')),
+            'contains_wake_phrase': bool(event.get('contains_wake_phrase')),
+            'confidence': float(event.get('confidence') or 0.0),
+            'timestamp': float(event.get('timestamp') or time.time()),
+        }
+        if route == 'b2_confirm':
+            command['task_request_id'] = self.task_request_id(event)
+        msg = String()
+        msg.data = json.dumps(command, ensure_ascii=False)
+        self.text_pub.publish(msg)
+        self.get_logger().info(f'Voice routed to text_command: {msg.data}')
+
+    def task_request_id(self, event: Dict[str, Any]) -> str:
+        session_id = str(event.get('session_id') or 'voice')
+        utterance_id = str(event.get('utterance_id') or int(time.time() * 1000))
+        return f'b2_pick_{session_id}_{utterance_id}'
+
+    def sales_status_callback(self, msg: String) -> None:
+        try:
+            self.sales_status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.sales_status = {}
+
+    def system_mode_callback(self, msg: String) -> None:
+        mode = msg.data.strip()
+        if mode:
+            self.system_mode = mode
+
+    def task_status_callback(self, msg: TaskStatus) -> None:
+        if msg.status in ('completed', 'failed', 'rejected'):
+            return
+
+    def remember_utterance(self, key: str) -> None:
+        self.recent_utterances.add(key)
+        self.recent_utterance_order.append(key)
+        while len(self.recent_utterance_order) > 100:
+            old = self.recent_utterance_order.pop(0)
+            self.recent_utterances.discard(old)
+
+    def normalize_text(self, text: str) -> str:
+        table = str.maketrans('', '', ' ，。！？!?、,. ')
+        cleaned = text.strip().translate(table)
+        for filler in ('呃', '嗯', '啊'):
+            cleaned = cleaned.replace(filler, '')
+        return cleaned
+
+    def contains_any(self, text: str, words: tuple) -> bool:
+        return any(word in text for word in words)
+
+    def is_confirm(self, text: str) -> bool:
+        return any(word in text for word in CONFIRM_WORDS)
+
+    def say(self, task_id: str, text: str, priority: int = 5) -> None:
+        msg = SayText()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.task_id = task_id
+        msg.priority = int(priority)
+        msg.text = text
+        self.say_pub.publish(msg)
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = VoiceCommandRouterNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

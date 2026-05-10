@@ -26,6 +26,8 @@ setup(
             'retail_task_node = ylhb_llm.retail_task_node:main',
             'basic_motion_command_node = ylhb_llm.basic_motion_command_node:main',
             'voice_input_node = ylhb_llm.voice_input_node:main',
+            'voice_session_node = ylhb_llm.voice_session_node:main',
+            'voice_command_router_node = ylhb_llm.voice_command_router_node:main',
             'voice_output_node = ylhb_llm.voice_output_node:main',
             'retail_display_ui_node = ylhb_llm.retail_display_ui_node:main',
             'system_supervisor_node = ylhb_llm.system_supervisor_node:main',

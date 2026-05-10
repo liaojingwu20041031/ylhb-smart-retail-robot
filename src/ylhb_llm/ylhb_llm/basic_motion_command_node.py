@@ -1,3 +1,4 @@
+import json
 import time
 from typing import Optional, Tuple
 
@@ -59,12 +60,13 @@ class BasicMotionCommandNode(Node):
             self.get_logger().warn(f'Ignoring unknown system_mode: {mode}')
 
     def text_command_callback(self, msg: String) -> None:
-        command = self.parse_motion_command(msg.data)
+        text = self.command_text(msg.data)
+        command = self.parse_motion_command(text)
         if command is None:
             return
-        if self.system_mode in ('sleep', 'fault') and not self.is_stop_command(msg.data):
+        if self.system_mode in ('sleep', 'fault') and not self.is_stop_command(text):
             self.get_logger().info(
-                f'Ignoring motion command while system_mode={self.system_mode}: {msg.data}'
+                f'Ignoring motion command while system_mode={self.system_mode}: {text}'
             )
             return
 
@@ -74,6 +76,18 @@ class BasicMotionCommandNode(Node):
         twist.angular.z = angular_z
         self.cmd_pub.publish(twist)
         self.stop_at = time.monotonic() + self.motion_duration_sec
+
+    def command_text(self, data: str) -> str:
+        raw = data.strip()
+        if not raw.startswith('{'):
+            return raw
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        if isinstance(payload, dict):
+            return str(payload.get('text') or raw).strip()
+        return raw
 
     def timer_callback(self) -> None:
         if self.stop_at <= 0.0 or time.monotonic() < self.stop_at:

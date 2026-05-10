@@ -119,6 +119,31 @@ def generate_launch_description():
         ),
         Node(
             package='ylhb_llm',
+            executable='voice_session_node',
+            name='voice_session_node',
+            output='screen',
+            condition=IfCondition(enable_task_layer),
+            parameters=[
+                params_file,
+                {
+                    'dashscope_base_url': dashscope_base_url,
+                    'asr_model': asr_model,
+                    'audio_device': audio_device,
+                    'audio_input_device': audio_input_device,
+                    'enabled': ParameterValue(enable_voice, value_type=bool),
+                },
+            ],
+        ),
+        Node(
+            package='ylhb_llm',
+            executable='voice_command_router_node',
+            name='voice_command_router_node',
+            output='screen',
+            condition=IfCondition(enable_task_layer),
+            parameters=[params_file],
+        ),
+        Node(
+            package='ylhb_llm',
             executable='voice_output_node',
             name='voice_output_node',
             output='screen',

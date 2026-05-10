@@ -90,6 +90,8 @@ class UiSignals(QObject):
     say_text = pyqtSignal(object)
     cart = pyqtSignal(object)
     voice_status = pyqtSignal(object)
+    voice_session_status = pyqtSignal(object)
+    text_command = pyqtSignal(object)
     sales_dialogue_status = pyqtSignal(object)
     localized_objects = pyqtSignal(object)
     system_status = pyqtSignal(object)
@@ -114,7 +116,11 @@ class RetailDisplayRosBridge(Node):
         self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
         self.declare_parameter('cart_topic', '/retail_ai/cart')
         self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
+        self.declare_parameter('voice_session_status_topic', '/retail_ai/voice_session_status')
+        self.declare_parameter('voice_command_event_topic', '/retail_ai/voice_command_event')
         self.declare_parameter('capture_voice_service_name', '/retail_ai/capture_voice')
+        self.declare_parameter('start_voice_session_service_name', '/retail_ai/start_voice_session')
+        self.declare_parameter('stop_voice_session_service_name', '/retail_ai/stop_voice_session')
         self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
         self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
@@ -141,6 +147,10 @@ class RetailDisplayRosBridge(Node):
             Trigger, self.get_parameter('start_b1_service_name').value)
         self.capture_voice_client = self.create_client(
             Trigger, self.get_parameter('capture_voice_service_name').value)
+        self.start_voice_session_client = self.create_client(
+            Trigger, self.get_parameter('start_voice_session_service_name').value)
+        self.stop_voice_session_client = self.create_client(
+            Trigger, self.get_parameter('stop_voice_session_service_name').value)
         self.b1_service_ready = False
 
         self.create_subscription(TaskEvent, self.get_parameter('task_event_topic').value,
@@ -155,6 +165,10 @@ class RetailDisplayRosBridge(Node):
                                  lambda msg: self.signals.cart.emit(msg), 10)
         self.create_subscription(VoiceStatus, self.get_parameter('voice_status_topic').value,
                                  lambda msg: self.signals.voice_status.emit(msg), 10)
+        self.create_subscription(String, self.get_parameter('voice_session_status_topic').value,
+                                 lambda msg: self.signals.voice_session_status.emit(msg), system_mode_qos())
+        self.create_subscription(String, self.get_parameter('text_command_topic').value,
+                                 lambda msg: self.signals.text_command.emit(msg), 10)
         self.create_subscription(String, self.get_parameter('localized_objects_topic').value,
                                  lambda msg: self.signals.localized_objects.emit(msg), 10)
         self.create_subscription(String, self.get_parameter('system_status_topic').value,
@@ -248,6 +262,33 @@ class RetailDisplayRosBridge(Node):
         future = self.capture_voice_client.call_async(Trigger.Request())
         future.add_done_callback(self._capture_voice_done)
 
+    def call_voice_session_service(self, start: bool, wait_timeout_sec: float = 2.0) -> None:
+        client = self.start_voice_session_client if start else self.stop_voice_session_client
+        threading.Thread(
+            target=self._call_voice_session_service_after_wait,
+            args=(client, start, wait_timeout_sec),
+            daemon=True,
+        ).start()
+
+    def _call_voice_session_service_after_wait(self, client: Any, start: bool, wait_timeout_sec: float) -> None:
+        if not client.wait_for_service(timeout_sec=wait_timeout_sec):
+            action = '开启' if start else '关闭'
+            self.signals.ros_error.emit(f'语音模式{action}服务未就绪。')
+            return
+        future = client.call_async(Trigger.Request())
+        future.add_done_callback(lambda fut: self._voice_session_done(fut, start))
+
+    def _voice_session_done(self, future: Any, start: bool) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.signals.ros_error.emit(f'语音模式服务调用失败：{exc}')
+            return
+        if not result.success:
+            self.signals.ros_error.emit(str(result.message))
+            return
+        self.get_logger().info(f'Voice session {"started" if start else "stopped"}: {result.message}')
+
     def _capture_voice_done(self, future: Any) -> None:
         try:
             result = future.result()
@@ -267,6 +308,8 @@ class RetailDisplayWindow(QWidget):
         self.current_task_id = ''
         self.last_update_ts = 0.0
         self.voice_capture_active = False
+        self.voice_session_enabled = False
+        self.voice_session_state = 'OFF'
         self.voice_speaking = False
         self.latest_task_image = ''
         self.latest_objects_payload: Dict[str, Any] = {}
@@ -425,6 +468,32 @@ class RetailDisplayWindow(QWidget):
             task_a_layout.addWidget(button, idx // 2, idx % 2)
         layout.addWidget(task_a)
 
+        task_a2 = QGroupBox('任务 A-2 现场语音交互')
+        task_a2_layout = QVBoxLayout(task_a2)
+        self.configure_layout(task_a2_layout)
+        self.voice_session_button = QPushButton('开启语音模式')
+        self.voice_session_button.clicked.connect(self.toggle_voice_session)
+        task_a2_layout.addWidget(self.voice_session_button)
+        self.voice_session_state_label = QLabel('状态: 关闭')
+        self.voice_session_wake_label = QLabel('唤醒词: 小零小零')
+        self.voice_session_asr_label = QLabel('ASR: -')
+        self.voice_session_text_label = QLabel('入口: -')
+        for label in (
+            self.voice_session_state_label,
+            self.voice_session_wake_label,
+            self.voice_session_asr_label,
+            self.voice_session_text_label,
+        ):
+            label.setFrameShape(QFrame.Panel)
+            label.setFrameShadow(QFrame.Sunken)
+            label.setMinimumHeight(24 if self.compact_ui else 28)
+            label.setWordWrap(True)
+        task_a2_layout.addWidget(self.voice_session_state_label)
+        task_a2_layout.addWidget(self.voice_session_wake_label)
+        task_a2_layout.addWidget(self.voice_session_asr_label)
+        task_a2_layout.addWidget(self.voice_session_text_label)
+        layout.addWidget(task_a2)
+
         task_b = QGroupBox('任务 B')
         task_b_layout = QVBoxLayout(task_b)
         self.b1_button = QPushButton('导入任务书图片 / 开始 B-1')
@@ -440,8 +509,8 @@ class RetailDisplayWindow(QWidget):
         self.shopping_input.returnPressed.connect(self.start_b2)
         self.b2_button = QPushButton('发送')
         self.b2_button.clicked.connect(self.start_b2)
-        self.voice_input_button = QPushButton('语音')
-        self.voice_input_button.clicked.connect(self.capture_voice)
+        self.voice_input_button = QPushButton('语音模式')
+        self.voice_input_button.clicked.connect(self.toggle_voice_session)
         b2_row.addWidget(self.shopping_input, 1)
         b2_row.addWidget(self.b2_button)
         b2_row.addWidget(self.voice_input_button)
@@ -633,6 +702,8 @@ class RetailDisplayWindow(QWidget):
         self.signals.sales_dialogue_status.connect(self.on_sales_dialogue_status)
         self.signals.cart.connect(self.on_cart)
         self.signals.voice_status.connect(self.on_voice_status)
+        self.signals.voice_session_status.connect(self.on_voice_session_status)
+        self.signals.text_command.connect(self.on_text_command)
         self.signals.localized_objects.connect(self.on_localized_objects)
         self.signals.system_status.connect(self.on_system_status)
         self.signals.system_mode.connect(self.on_system_mode)
@@ -757,8 +828,14 @@ class RetailDisplayWindow(QWidget):
         can_start = self.system_mode == 'ready'
         for button in (self.b1_button, self.b2_button, self.checkout_button):
             button.setEnabled(can_start)
-        self.voice_input_button.setEnabled(can_start and not self.voice_capture_active and not self.voice_speaking)
-        self.voice_input_button.setText('录音中' if self.voice_capture_active else '语音')
+        voice_button_enabled = can_start or self.voice_session_enabled
+        self.voice_input_button.setEnabled(voice_button_enabled and not self.voice_capture_active)
+        self.voice_session_button.setEnabled(voice_button_enabled and not self.voice_capture_active)
+        session_text = '关闭语音模式' if self.voice_session_enabled else '开启语音模式'
+        if self.voice_capture_active:
+            session_text = '录音中'
+        self.voice_session_button.setText(session_text)
+        self.voice_input_button.setText(session_text if self.voice_session_enabled else '语音模式')
         self.complete_button.setEnabled(
             self.system_mode == 'running' and self.task_phase == 'completed'
         )
@@ -837,6 +914,13 @@ class RetailDisplayWindow(QWidget):
         self.refresh_controls()
         self.add_timeline('语音输入: 开始录音识别')
         self.bridge.call_capture_voice_service()
+
+    def toggle_voice_session(self) -> None:
+        if self.system_mode != 'ready' and not self.voice_session_enabled:
+            self.show_error('当前系统不在运行准备状态，不能开启语音模式。')
+            return
+        self.bridge.call_voice_session_service(not self.voice_session_enabled)
+        self.add_timeline('语音模式: 请求关闭' if self.voice_session_enabled else '语音模式: 请求开启')
 
     def start_checkout(self) -> None:
         if not self.confirm_start('确认启动 C', '开始结算并识别结算区商品？'):
@@ -931,6 +1015,39 @@ class RetailDisplayWindow(QWidget):
             self.add_timeline(f'语音识别: {text}')
         else:
             self.show_error(message)
+
+    def on_voice_session_status(self, msg: String) -> None:
+        payload = self.parse_json_message(msg.data)
+        self.voice_session_enabled = bool(payload.get('enabled'))
+        self.voice_session_state = str(payload.get('state') or 'OFF')
+        state_text = {
+            'OFF': '关闭',
+            'WAIT_WAKE': '待唤醒',
+            'LISTENING': '监听中',
+            'RECORDING': '录音中',
+            'ASR_PROCESSING': '识别中',
+            'AWAKENED_IDLE': '已唤醒',
+            'TTS_PAUSED': '播报暂停监听',
+        }.get(self.voice_session_state, self.voice_session_state)
+        if payload.get('awakened'):
+            state_text = f'{state_text} / 已唤醒'
+        self.voice_session_state_label.setText(f'状态: {state_text}')
+        self.voice_session_wake_label.setText(f"唤醒词: {payload.get('wake_phrase') or '小零小零'}")
+        self.voice_session_asr_label.setText(f"ASR: {payload.get('last_asr_text') or '-'}")
+        self.voice_session_text_label.setText(f"入口: {payload.get('last_published_text') or '-'}")
+        self.refresh_controls()
+        self.touch_update()
+
+    def on_text_command(self, msg: String) -> None:
+        text, _payload = self.text_from_command_message(msg.data)
+        self.voice_session_text_label.setText(f'入口: {text or "-"}')
+
+    def text_from_command_message(self, data: str) -> Tuple[str, Dict[str, Any]]:
+        raw = data.strip()
+        if not raw.startswith('{'):
+            return raw, {}
+        payload = self.parse_json_message(raw)
+        return str(payload.get('text') or raw), payload
 
     def on_task_event(self, msg: TaskEvent) -> None:
         self.current_task_id = msg.task_id

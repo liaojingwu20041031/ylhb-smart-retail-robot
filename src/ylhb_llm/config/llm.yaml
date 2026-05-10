@@ -95,8 +95,13 @@ retail_display_ui_node:
     task_status_topic: /retail_ai/task_status
     say_text_topic: /retail_ai/say_text
     sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
+    voice_session_status_topic: /retail_ai/voice_session_status
+    voice_command_event_topic: /retail_ai/voice_command_event
     cart_topic: /retail_ai/cart
     voice_status_topic: /retail_ai/voice_status
+    start_voice_session_service_name: /retail_ai/start_voice_session
+    stop_voice_session_service_name: /retail_ai/stop_voice_session
+    capture_voice_service_name: /retail_ai/capture_voice
     localized_objects_topic: /perception/localized_objects
     start_b1_service_name: /retail_ai/start_b1_task
     task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
@@ -159,6 +164,39 @@ voice_input_node:
 
     # ASR 请求超时，单位秒。现场短语音建议 10~15 秒以内。
     request_timeout_sec: 15.0
+
+voice_session_node:
+  ros__parameters:
+    voice_command_event_topic: /retail_ai/voice_command_event
+    voice_session_status_topic: /retail_ai/voice_session_status
+    say_text_topic: /retail_ai/say_text
+    voice_status_topic: /retail_ai/voice_status
+    start_voice_session_service_name: /retail_ai/start_voice_session
+    stop_voice_session_service_name: /retail_ai/stop_voice_session
+    audio_device: default
+    audio_input_device: default
+    enabled: false
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    asr_model: qwen3-asr-flash
+    request_timeout_sec: 15.0
+    wake_phrase: 小零小零
+    wake_aliases: [小零小零, 小玲小玲, 小灵小灵, 小林小林, 小零, 小玲]
+    sample_rate: 16000
+    frame_ms: 30
+    energy_threshold: 550
+    vad_silence_sec: 1.0
+    min_voice_sec: 0.5
+    max_utterance_sec: 8.0
+    session_idle_timeout_sec: 20.0
+
+voice_command_router_node:
+  ros__parameters:
+    voice_command_event_topic: /retail_ai/voice_command_event
+    text_command_topic: /retail_ai/text_command
+    sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
+    system_mode_topic: /retail_ai/system_mode
+    task_status_topic: /retail_ai/task_status
+    say_text_topic: /retail_ai/say_text
 
 voice_output_node:
   ros__parameters:

@@ -125,7 +125,7 @@ arecord -l
 aplay -l
 ```
 
-当前项目推荐使用按钮触发式语音输入，避免连续录音把机器人自己的播报再次识别成指令。eMeet Luna 枚举为 `CARD=Luna` 时启动：
+当前项目推荐使用唤醒式连续语音模式。UI 中点击“开启语音模式”后，机器人本地监听人声，听到“小零小零”或“小玲小玲”等唤醒词后进入会话；后续语音会先发布结构化事件，再由路由器过滤后进入 `/retail_ai/text_command`。eMeet Luna 枚举为 `CARD=Luna` 时启动：
 
 ```bash
 export DASHSCOPE_API_KEY=你的DashScopeKey
@@ -137,10 +137,19 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
   tts_voice:=Serena
 ```
 
-也可以直接调用一次录音识别服务：
+也可以直接调用一次录音识别服务，作为 ASR 调试入口：
 
 ```bash
 ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
+```
+
+连续语音模式服务和调试话题：
+
+```bash
+ros2 service call /retail_ai/start_voice_session std_srvs/srv/Trigger "{}"
+ros2 service call /retail_ai/stop_voice_session std_srvs/srv/Trigger "{}"
+ros2 topic echo /retail_ai/voice_session_status
+ros2 topic echo /retail_ai/voice_command_event
 ```
 
 启动比赛现场显示屏 UI / 总控台：
@@ -189,7 +198,7 @@ ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
 ros2 service call /retail_ai/start_b1_task std_srvs/srv/Trigger "{}"
 ```
 
-文字/语音购物入口：
+文字入口仍兼容纯文本；连续语音模式会先生成结构化事件，再由路由器发布结构化 `/retail_ai/text_command`：
 
 ```bash
 ros2 topic pub --once /retail_ai/text_command std_msgs/msg/String "{data: '来瓶可乐'}"

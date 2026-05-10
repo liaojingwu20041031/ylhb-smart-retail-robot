@@ -678,8 +678,12 @@ class RetailTaskNode(Node):
         if alternatives:
             alt_names = '、'.join(p.name for p in alternatives[:2])
             alt_text = f' 如果您想换一种，也可以考虑{alt_names}。'
+        if need_text in ('已经明确说出了商品', 'explicit_product'):
+            prefix = f'好的，我已经帮您选中{product.name}。'
+        else:
+            prefix = f'我理解您现在是{need_text}。'
         reply = (
-            f'我理解您现在是{need_text}。'
+            f'{prefix}'
             f'我主推{product.name}，因为{reason}。'
             f'{alt_text}'
             f' 需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
@@ -810,7 +814,7 @@ class RetailTaskNode(Node):
             'tissue': '需要纸巾或清洁用品',
             'clean': '需要清洁用品',
             'daily_goods': '需要日常生活用品',
-            'explicit_product': '已经明确说出了商品',
+            'explicit_product': 'explicit_product',
         }.get(need_category, '想选一件合适的商品')
 
     def product_reason_for_need(

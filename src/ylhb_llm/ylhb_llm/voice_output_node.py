@@ -30,6 +30,7 @@ class VoiceOutputNode(Node):
         self.declare_parameter('enable_tts_cache', True)
         self.declare_parameter('split_long_tts', True)
         self.declare_parameter('tts_segment_max_chars', 70)
+        self.declare_parameter('preserve_b2_tts_single_request', True)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.tts_enabled = bool(self.get_parameter('tts_enabled').value)
@@ -43,6 +44,8 @@ class VoiceOutputNode(Node):
         self.enable_tts_cache = bool(self.get_parameter('enable_tts_cache').value)
         self.split_long_tts = bool(self.get_parameter('split_long_tts').value)
         self.tts_segment_max_chars = int(self.get_parameter('tts_segment_max_chars').value)
+        self.preserve_b2_tts_single_request = bool(
+            self.get_parameter('preserve_b2_tts_single_request').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
         self.stop_event = threading.Event()
@@ -79,7 +82,10 @@ class VoiceOutputNode(Node):
             if text:
                 self.get_logger().info(f'SAY[{msg.task_id}]: {text}')
             if self.enabled and self.tts_enabled and text:
-                segments = self.split_tts_segments(text, self.tts_segment_max_chars) if self.split_long_tts else [text]
+                if self.should_split_tts(msg.task_id, text):
+                    segments = self.split_tts_segments(text, self.tts_segment_max_chars)
+                else:
+                    segments = [text]
                 for segment in segments:
                     if self.stop_event.is_set():
                         break
@@ -128,6 +134,13 @@ class VoiceOutputNode(Node):
                 os.unlink(audio_path)
             except OSError:
                 pass
+
+    def should_split_tts(self, task_id: str, text: str) -> bool:
+        if not self.split_long_tts:
+            return False
+        if self.preserve_b2_tts_single_request and task_id.startswith(('text_', 'b2_', 'b2_pick_')):
+            return False
+        return len(text.strip()) > self.tts_segment_max_chars
 
     def split_tts_segments(self, text: str, max_chars: int) -> list[str]:
         text = text.strip()

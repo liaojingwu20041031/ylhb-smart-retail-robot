@@ -195,10 +195,12 @@ voice_session_node:
     sample_rate: 16000
     frame_ms: 30
     energy_threshold: 550
-    vad_silence_sec: 0.65
-    min_voice_sec: 0.45
+    vad_silence_sec: 0.75
+    min_voice_sec: 0.5
     max_utterance_sec: 6.0
     session_idle_timeout_sec: 35.0
+    max_listen_wait_sec: 8.0
+    voice_start_frames_required: 3
     asr_empty_silent_first: true
     asr_fail_prompt_threshold: 2
     asr_fail_standby_threshold: 3
@@ -247,4 +249,5 @@ voice_output_node:
     request_timeout_sec: 10.0
     enable_tts_cache: true
     split_long_tts: true
-    tts_segment_max_chars: 70
+    tts_segment_max_chars: 90
+    preserve_b2_tts_single_request: true

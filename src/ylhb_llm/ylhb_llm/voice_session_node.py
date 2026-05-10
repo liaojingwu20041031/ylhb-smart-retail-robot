@@ -30,6 +30,8 @@ VOICE_CLOSE_WORDS = (
     '关机',
 )
 
+ASR_TIMEOUT_MARKER = '__ASR_TIMEOUT__'
+
 
 def transient_qos() -> QoSProfile:
     return QoSProfile(
@@ -64,6 +66,8 @@ class VoiceSessionNode(Node):
         self.declare_parameter('min_voice_sec', 0.5)
         self.declare_parameter('max_utterance_sec', 8.0)
         self.declare_parameter('session_idle_timeout_sec', 35.0)
+        self.declare_parameter('max_listen_wait_sec', 8.0)
+        self.declare_parameter('voice_start_frames_required', 3)
         self.declare_parameter('asr_empty_silent_first', True)
         self.declare_parameter('asr_fail_prompt_threshold', 2)
         self.declare_parameter('asr_fail_standby_threshold', 3)
@@ -85,6 +89,11 @@ class VoiceSessionNode(Node):
         self.min_voice_sec = float(self.get_parameter('min_voice_sec').value)
         self.max_utterance_sec = float(self.get_parameter('max_utterance_sec').value)
         self.session_idle_timeout_sec = float(self.get_parameter('session_idle_timeout_sec').value)
+        self.max_listen_wait_sec = float(self.get_parameter('max_listen_wait_sec').value)
+        self.voice_start_frames_required = max(
+            1,
+            int(self.get_parameter('voice_start_frames_required').value),
+        )
         self.asr_empty_silent_first = bool(self.get_parameter('asr_empty_silent_first').value)
         self.asr_fail_prompt_threshold = int(self.get_parameter('asr_fail_prompt_threshold').value)
         self.asr_fail_standby_threshold = int(self.get_parameter('asr_fail_standby_threshold').value)
@@ -200,11 +209,19 @@ class VoiceSessionNode(Node):
                 continue
 
             self.state = 'LISTENING' if self.awakened else 'WAIT_WAKE'
-            audio = self.wait_and_record_by_vad()
+            idle_deadline = (
+                self.last_active_at + self.session_idle_timeout_sec
+                if self.awakened else 0.0
+            )
+            audio = self.wait_and_record_by_vad(idle_deadline=idle_deadline)
             if not audio:
                 continue
             self.state = 'ASR_PROCESSING'
             text = self.transcribe_pcm(audio)
+            if text == ASR_TIMEOUT_MARKER:
+                self.state = 'AWAKENED_IDLE' if self.awakened else 'WAIT_WAKE'
+                self.get_logger().info('Ignoring ASR timeout audio segment.')
+                continue
             if not text:
                 self.handle_empty_asr()
                 continue
@@ -235,11 +252,12 @@ class VoiceSessionNode(Node):
             return
         self.say('voice_session', '我没有听清，请再说一遍。', priority=5)
 
-    def wait_and_record_by_vad(self) -> bytes:
+    def wait_and_record_by_vad(self, idle_deadline: float = 0.0) -> bytes:
         frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
         max_frames = max(1, int(self.max_utterance_sec * 1000 / self.frame_ms))
         min_frames = max(1, int(self.min_voice_sec * 1000 / self.frame_ms))
         silence_frames = max(1, int(self.vad_silence_sec * 1000 / self.frame_ms))
+        listen_started_at = time.monotonic()
         cmd = [
             'arecord',
             '-q',
@@ -259,20 +277,44 @@ class VoiceSessionNode(Node):
             return b''
 
         frames: List[bytes] = []
+        pending_loud_frames: List[bytes] = []
         active = False
         quiet = 0
+        loud = 0
         try:
             while self.session_enabled and not self.stop_event.is_set():
+                now = time.monotonic()
+                if idle_deadline > 0.0 and now >= idle_deadline:
+                    return b''
+                if (
+                    idle_deadline > 0.0
+                    and not active
+                    and self.max_listen_wait_sec > 0.0
+                    and now - listen_started_at > self.max_listen_wait_sec
+                ):
+                    return b''
                 if self.is_tts_playing:
                     return b''
                 chunk = proc.stdout.read(frame_bytes) if proc.stdout else b''
                 if len(chunk) < frame_bytes:
                     return b''
                 energy = audioop.rms(chunk, 2)
+                if not active:
+                    if energy >= self.energy_threshold:
+                        loud += 1
+                        pending_loud_frames.append(chunk)
+                        if loud >= self.voice_start_frames_required:
+                            active = True
+                            quiet = 0
+                            frames.extend(pending_loud_frames)
+                            pending_loud_frames = []
+                    else:
+                        loud = 0
+                        pending_loud_frames = []
+                    continue
                 if energy >= self.energy_threshold:
-                    active = True
                     quiet = 0
-                elif active:
+                else:
                     quiet += 1
                 if active:
                     self.state = 'RECORDING'
@@ -305,6 +347,9 @@ class VoiceSessionNode(Node):
             except QwenClientError as exc:
                 self.last_error = f'ASR failed: {exc}'
                 self.get_logger().warn(self.last_error)
+                error_text = str(exc).lower()
+                if 'timed out' in error_text or 'timeout' in error_text:
+                    return ASR_TIMEOUT_MARKER
                 return ''
         finally:
             try:

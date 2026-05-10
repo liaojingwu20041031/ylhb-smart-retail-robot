@@ -128,24 +128,35 @@ class QwenClient:
 
     def transcribe_audio(self, audio_path: str, model: str, timeout_sec: float) -> str:
         audio_url = self._audio_data_url(audio_path)
-        return self.chat_completion(
-            model=model,
-            messages=[
-                {'role': 'system', 'content': '请把中文语音转成文字，只输出转写文本。'},
-                {'role': 'user', 'content': [
-                    {'type': 'input_audio', 'input_audio': {'data': audio_url}},
-                ]},
-            ],
-            timeout_sec=timeout_sec,
-            temperature=0.0,
-            extra_body={
-                'stream': False,
-                'asr_options': {
-                    'language': 'zh',
-                    'enable_itn': False,
-                },
+        endpoint = self._dashscope_generation_url()
+        payload = {
+            'model': model,
+            'input': {
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': [
+                            {'audio': audio_url},
+                        ],
+                    },
+                ],
             },
-        ).strip()
+        }
+        body = self._post_dashscope_json(
+            endpoint=endpoint,
+            payload=payload,
+            timeout_sec=timeout_sec,
+            error_prefix=self._asr_error_prefix(endpoint, model, audio_path, audio_url),
+        )
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise QwenClientError(f'Unexpected DashScope ASR response: {body[:500]}') from exc
+
+        text = self._extract_text(parsed).strip()
+        if not text:
+            raise QwenClientError(f'DashScope ASR response has no text: {body[:500]}')
+        return text
 
     def synthesize_speech(self, text: str, model: str, timeout_sec: float) -> Optional[bytes]:
         return self.synthesize_speech_bytes(
@@ -174,6 +185,33 @@ class QwenClient:
                 'language_type': language_type,
             },
         }
+        body = self._post_dashscope_json(
+            endpoint=endpoint,
+            payload=payload,
+            timeout_sec=timeout_sec,
+            error_prefix='DashScope TTS',
+        )
+
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise QwenClientError(f'Unexpected DashScope TTS response: {body[:500]}') from exc
+
+        audio_url = self._extract_audio_url(parsed)
+        if not audio_url:
+            raise QwenClientError(f'DashScope TTS response has no audio url: {body[:500]}')
+        return self._download_url(audio_url, timeout_sec)
+
+    def _post_dashscope_json(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        timeout_sec: float,
+        error_prefix: str,
+    ) -> str:
+        if not self.api_key:
+            raise QwenClientError(f'{self.api_key_env} is not set')
+
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         request = urllib.request.Request(
             endpoint,
@@ -186,22 +224,12 @@ class QwenClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-                body = response.read().decode('utf-8')
+                return response.read().decode('utf-8')
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode('utf-8', errors='replace')
-            raise QwenClientError(f'DashScope TTS HTTP {exc.code}: {detail}') from exc
+            raise QwenClientError(f'{error_prefix} HTTP {exc.code}: {detail}') from exc
         except Exception as exc:
-            raise QwenClientError(str(exc)) from exc
-
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise QwenClientError(f'Unexpected DashScope TTS response: {body[:500]}') from exc
-
-        audio_url = self._extract_audio_url(parsed)
-        if not audio_url:
-            raise QwenClientError(f'DashScope TTS response has no audio url: {body[:500]}')
-        return self._download_url(audio_url, timeout_sec)
+            raise QwenClientError(f'{error_prefix}: {exc}') from exc
 
     def _image_data_url(self, image_path: str) -> str:
         mime = mimetypes.guess_type(image_path)[0] or 'image/png'
@@ -220,6 +248,53 @@ class QwenClient:
         else:
             root = self.base_url
         return root.rstrip('/') + '/api/v1/services/aigc/multimodal-generation/generation'
+
+    def _asr_error_prefix(self, endpoint: str, model: str, audio_path: str, audio_url: str) -> str:
+        try:
+            audio_size = os.path.getsize(audio_path)
+        except OSError:
+            audio_size = -1
+        return (
+            'DashScope ASR '
+            f'endpoint={endpoint} model={model} audio_bytes={audio_size} '
+            f'audio_prefix={audio_url[:22]}'
+        )
+
+    def _extract_text(self, parsed: Dict[str, Any]) -> str:
+        candidates: List[str] = []
+        self._collect_text_values(parsed.get('text'), candidates)
+        self._collect_text_values(parsed.get('transcription'), candidates)
+
+        output = parsed.get('output')
+        if isinstance(output, dict):
+            self._collect_text_values(output.get('text'), candidates)
+            self._collect_text_values(output.get('transcription'), candidates)
+            choices = output.get('choices')
+            if isinstance(choices, list):
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    self._collect_text_values(choice.get('text'), candidates)
+                    message = choice.get('message')
+                    if isinstance(message, dict):
+                        self._collect_text_values(message.get('content'), candidates)
+                        self._collect_text_values(message.get('text'), candidates)
+        return ' '.join(item for item in candidates if item).strip()
+
+    def _collect_text_values(self, value: Any, candidates: List[str]) -> None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                candidates.append(stripped)
+            return
+        if isinstance(value, dict):
+            self._collect_text_values(value.get('text'), candidates)
+            self._collect_text_values(value.get('transcription'), candidates)
+            self._collect_text_values(value.get('content'), candidates)
+            return
+        if isinstance(value, list):
+            for item in value:
+                self._collect_text_values(item, candidates)
 
     def _extract_audio_url(self, parsed: Dict[str, Any]) -> str:
         output = parsed.get('output')

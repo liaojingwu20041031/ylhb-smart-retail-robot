@@ -2360,7 +2360,7 @@ retail_task_node -> /retail_ai/say_text -> voice_output_node -> 云端 TTS
 
 `voice_output_node` 内部有播报队列，`SayText.priority` 越大越优先，`interrupt=true` 会清空等待队列。这样图像理解、推荐商品、结算播报不会重叠播放。
 
-当前 ASR 使用 DashScope OpenAI 兼容接口的 Qwen3-ASR 专用输入格式：`user` 消息只包含 `input_audio`，中文转写要求放在 `system` 消息中。不要在同一个 `user.content` 里混入文本，也不要给 `input_audio` 额外加 `format` 字段，否则可能触发 `dedicated task asr ... does not support this input`。
+当前 ASR 使用 DashScope 同步 multimodal 接口的最小请求体：`input.messages` 内只放一条 `user` 消息，消息内容只包含 `audio: data:audio/wav;base64,...`。UI 的“语音输入”按钮只触发 `/retail_ai/capture_voice` 服务和展示识别文本，`/retail_ai/text_command` 只由 `voice_input_node` 在 ASR 成功后发布一次，避免同一条语音重复执行任务。
 
 #### 6.7.10 商品库和推荐规则
 

@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import wave
 
 import rclpy
 from rclpy.node import Node
@@ -78,6 +79,7 @@ class VoiceOutputNode(Node):
             except queue.Empty:
                 continue
             self.current_task_id = msg.task_id
+            self.publish_status()
             text = msg.text.strip()
             if text:
                 self.get_logger().info(f'SAY[{msg.task_id}]: {text}')
@@ -91,6 +93,7 @@ class VoiceOutputNode(Node):
                         break
                     self.speak(segment)
             self.current_task_id = ''
+            self.publish_status()
             self.queue.task_done()
 
     def speak(self, text: str) -> None:
@@ -124,9 +127,13 @@ class VoiceOutputNode(Node):
             if self.audio_device and self.audio_device != 'default':
                 cmd.extend(['-D', self.audio_device])
             cmd.append(audio_path)
-            result = subprocess.run(cmd, check=False, timeout=self.request_timeout_sec + 10.0)
+            duration = self.wav_duration_sec(audio_path)
+            play_timeout = min(45.0, max(8.0, duration + 5.0))
+            result = subprocess.run(cmd, check=False, timeout=play_timeout)
             if result.returncode != 0:
                 self.get_logger().warn(f'aplay failed with exit code {result.returncode}')
+        except subprocess.TimeoutExpired:
+            self.get_logger().warn(f'aplay timed out, killing playback: {audio_path}')
         except Exception as exc:
             self.get_logger().warn(f'aplay failed: {exc}')
         finally:
@@ -141,6 +148,17 @@ class VoiceOutputNode(Node):
         if self.preserve_b2_tts_single_request and task_id.startswith(('text_', 'b2_', 'b2_pick_')):
             return False
         return len(text.strip()) > self.tts_segment_max_chars
+
+    def wav_duration_sec(self, audio_path: str) -> float:
+        try:
+            with wave.open(audio_path, 'rb') as wav:
+                frames = wav.getnframes()
+                rate = wav.getframerate()
+                if rate <= 0:
+                    return 0.0
+                return frames / float(rate)
+        except Exception:
+            return 0.0
 
     def split_tts_segments(self, text: str, max_chars: int) -> list[str]:
         text = text.strip()

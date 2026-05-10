@@ -287,6 +287,10 @@ class RetailTaskNode(Node):
             self.clear_sales_dialogue()
             return
 
+        if self.is_status_query_text(text):
+            self.say(task_id, self.status_query_reply(), priority=7)
+            return
+
         if self.system_mode in ('sleep', 'mapping', 'fault'):
             self.get_logger().info(
                 f'Ignoring text command while system_mode={self.system_mode}: {text}'
@@ -319,6 +323,11 @@ class RetailTaskNode(Node):
                 self.handle_sales_decision(task_id, text, decision, command_meta)
             else:
                 self.say(task_id, '您可以重新说明想要的商品类型，我再为您推荐。', priority=6)
+            return
+
+        general_reply = self.try_local_general_qa(text, command_meta)
+        if general_reply:
+            self.say(task_id, general_reply, priority=7)
             return
 
         fast_decision = self.try_local_fast_sales_decision(text, command_meta)
@@ -504,6 +513,47 @@ class RetailTaskNode(Node):
             return self.decision_by_need_category('tissue', normalized)
         return None
 
+    def try_local_general_qa(self, text: str, command_meta: Dict[str, Any]) -> str:
+        del command_meta
+        normalized = self.normalize_cn(text)
+        if any(k in normalized for k in ('介绍一下自己', '你是谁', '自我介绍', '介绍自己')):
+            return (
+                '我是智慧零售机器人小零，可以通过语音理解您的购物需求，'
+                '并完成商品推荐、确认取货和结算区送达。'
+                '您可以说“我口渴了”“我有点饿”或者“我要纸巾”，'
+                '我会先推荐合适商品，等您说“确认”后再开始取货。'
+            )
+        if any(k in normalized for k in ('你能做什么', '你会做什么', '有什么功能', '能干什么')):
+            return (
+                '我能做三件事：听懂您的语音或文字购物需求，推荐合适商品，'
+                '并在您确认后去货架取货、送到结算区。'
+                '您还可以说“换一个”“不要碳酸的”“便宜点”，我会继续调整推荐。'
+            )
+        if any(k in normalized for k in ('怎么用', '怎么和你说', '使用方法', '语音怎么用')):
+            return (
+                '使用时先说“小零小零”唤醒我，然后直接说明需求。'
+                '比如说“我口渴了”，我会推荐饮品；说“我有点饿”，我会推荐零食。'
+                '我只会在您明确说“确认”后开始取货，避免误操作。'
+            )
+        if any(k in normalized for k in ('有什么商品', '卖什么', '有哪些东西', '商品列表')):
+            return self.catalog_intro_reply()
+        if self.is_status_query_text(text):
+            return self.status_query_reply()
+        return ''
+
+    def is_status_query_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return any(k in normalized for k in ('现在状态', '当前状态', '任务状态'))
+
+    def status_query_reply(self) -> str:
+        if self.system_mode == 'running':
+            return '当前机器人正在执行任务，请等待完成，或者说“取消任务”。'
+        if self.sales_dialogue.get('active'):
+            product_name = str(self.sales_dialogue.get('last_product_name') or '')
+            if product_name:
+                return f'当前正在等待您确认{product_name}。需要的话请说“确认”，想换商品请说“换一个”。'
+        return '当前机器人处于待命状态，您可以直接说出想买的商品或需求。'
+
     def decision_from_category(
         self,
         text: str,
@@ -677,27 +727,28 @@ class RetailTaskNode(Node):
         alt_text = ''
         if alternatives:
             alt_names = '、'.join(p.name for p in alternatives[:2])
-            alt_text = f' 如果您想换一种，也可以考虑{alt_names}。'
+            alt_text = f'如果想换一种，也可以考虑{alt_names}。'
         if need_text in ('已经明确说出了商品', 'explicit_product'):
             prefix = f'好的，我已经帮您选中{product.name}。'
         else:
-            prefix = f'我理解您现在是{need_text}。'
+            prefix = f'我理解您现在{need_text}。'
         reply = (
             f'{prefix}'
             f'我主推{product.name}，因为{reason}。'
             f'{alt_text}'
-            f' 需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
+            f'需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
         )
         return self.polish_sales_reply_length(reply)
 
     def polish_sales_reply_length(self, reply: str) -> str:
-        if len(reply) < self.sales_reply_min_chars:
-            reply += ' 我会先为您保留这个推荐，确认后才会开始取货。'
+        reply = reply.replace('。 ', '。').replace('； ', '；')
+        reply = reply.replace('  ', ' ')
         if len(reply) > self.sales_reply_max_chars:
             replacements = (
                 ('比较适合', '适合'),
                 ('如果您想要', '如果想'),
                 ('我会先为您保留这个推荐，确认后才会开始取货。', ''),
+                ('当前可选商品范围内', '可选范围内'),
             )
             for old, new in replacements:
                 reply = reply.replace(old, new)
@@ -824,19 +875,44 @@ class RetailTaskNode(Node):
         positive_constraints: List[str],
         negative_constraints: List[str],
     ) -> str:
-        del need_category, positive_constraints, negative_constraints
+        del positive_constraints, negative_constraints
+        if product.id == 'oreo':
+            if need_category in ('hungry', 'snack'):
+                return '它是甜味饼干，比普通小零食更顶饱，适合饿的时候快速补充能量'
+            return '它口味经典，适合作为休闲零食'
+        if product.id == 'chips':
+            return '它咸香酥脆，比较解馋，适合想吃有味道零食的时候选择'
+        if product.id == 'water_nongfu':
+            return '它解渴直接、价格也低，适合口渴或者想要清爽饮品的时候选择'
+        if product.id in ('cola_coca', 'cola_pepsi'):
+            return '它是经典碳酸饮料，口感刺激，适合想喝可乐的时候选择'
+        if product.id == 'milk_pure':
+            return '它更健康，也能补充营养，适合不想喝碳酸饮料的时候选择'
+        if product.id == 'tissue_vinda':
+            return '它适合擦嘴、清洁和日常使用，是生活用品里很实用的选择'
+        if product.id == 'redbull':
+            return '它是功能饮料，适合困了、没精神或者想补充能量的时候选择'
+        if product.id == 'coffee_nestle':
+            return '它适合提神，比较适合学习或工作时想保持精神的时候选择'
+        if product.id in ('orange', 'apple'):
+            return '它清爽健康，价格也低，适合想吃水果或清淡零食的时候选择'
+        if product.id in ('toothpaste', 'shampoo'):
+            return '它属于常用生活护理用品，适合日常洗漱和清洁需求'
         if product.selling_points:
-            return '、'.join(product.selling_points[:2])
-        return f'它适合当前需求，价格{self.format_price(product.price)}元'
+            return f'它符合您的需求，特点是{"、".join(product.selling_points[:2])}'
+        return '它符合您当前的需求，也在当前可选商品范围内'
 
     def catalog_intro_reply(self) -> str:
         return '我这里有饮料、矿泉水、牛奶、零食、水果和生活用品。您可以说“我口渴了”“我有点饿”或者直接说商品名。'
 
     def reply_for_unclear_category(self, category: Dict[str, Any]) -> str:
-        reason = str(category.get('reason_cn') or '').strip()
-        if reason:
-            return f'我还不太确定您的需求，{reason}。请直接说商品名，或者说您想喝、想吃还是要生活用品。'
-        return '我还不太确定您的需求。请直接说商品名，或者说您想喝、想吃还是要生活用品。'
+        del category
+        return (
+            '我还没有完全判断出您想买哪类商品。'
+            '我可以帮您推荐饮料、零食、水果、牛奶和生活用品。'
+            '您可以换个说法，比如“我口渴了”“我有点饿”“我要纸巾”，'
+            '或者直接问“你能做什么”。'
+        )
 
     def normalize_cn(self, text: str) -> str:
         table = str.maketrans('', '', ' ，。！？!?、,. ')

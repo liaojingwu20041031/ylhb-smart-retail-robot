@@ -2034,7 +2034,7 @@ ros2 launch ylhb_llm llm.launch.py \
 | `audio_device` | `default` | 旧版兼容参数 | 旧命令仍可用 |
 | `dashscope_base_url` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | TTS 调用地址 | 和主节点保持一致 |
 | `tts_model` | `qwen3-tts-flash` | TTS 模型 ID | 按百炼控制台可用模型调整 |
-| `tts_voice` | `Cherry` | TTS 音色 | 可按百炼控制台支持音色调整 |
+| `tts_voice` | `Serena` | TTS 女声音色 | 默认使用更柔和的中文女声，可按百炼控制台支持音色调整 |
 | `tts_language_type` | `Chinese` | TTS 语言 | 中文播报固定 Chinese |
 | `request_timeout_sec` | `15.0` | TTS 请求超时 | 播报内容长时可调大 |
 
@@ -2347,7 +2347,8 @@ ros2 launch ylhb_llm llm.launch.py \
   enable_voice:=true \
   enable_tts:=true \
   audio_input_device:=plughw:CARD=Luna,DEV=0 \
-  audio_output_device:=plughw:CARD=Luna,DEV=0
+  audio_output_device:=plughw:CARD=Luna,DEV=0 \
+  tts_voice:=Serena
 ```
 
 播报链路：
@@ -2358,6 +2359,8 @@ retail_task_node -> /retail_ai/say_text -> voice_output_node -> 云端 TTS
 ```
 
 `voice_output_node` 内部有播报队列，`SayText.priority` 越大越优先，`interrupt=true` 会清空等待队列。这样图像理解、推荐商品、结算播报不会重叠播放。
+
+当前 ASR 使用 DashScope OpenAI 兼容接口的 Qwen3-ASR 专用输入格式：`user` 消息只包含 `input_audio`，中文转写要求放在 `system` 消息中。不要在同一个 `user.content` 里混入文本，也不要给 `input_audio` 额外加 `format` 字段，否则可能触发 `dedicated task asr ... does not support this input`。
 
 #### 6.7.10 商品库和推荐规则
 

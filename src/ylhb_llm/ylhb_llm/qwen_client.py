@@ -128,16 +128,23 @@ class QwenClient:
 
     def transcribe_audio(self, audio_path: str, model: str, timeout_sec: float) -> str:
         audio_url = self._audio_data_url(audio_path)
-        content = [
-            {'type': 'input_audio', 'input_audio': {'data': audio_url, 'format': 'wav'}},
-            {'type': 'text', 'text': '请把这段中文语音转成文字，只输出转写文本。'},
-        ]
         return self.chat_completion(
             model=model,
-            messages=[{'role': 'user', 'content': content}],
+            messages=[
+                {'role': 'system', 'content': '请把中文语音转成文字，只输出转写文本。'},
+                {'role': 'user', 'content': [
+                    {'type': 'input_audio', 'input_audio': {'data': audio_url}},
+                ]},
+            ],
             timeout_sec=timeout_sec,
             temperature=0.0,
-            extra_body={'asr_options': {'enable_itn': False}},
+            extra_body={
+                'stream': False,
+                'asr_options': {
+                    'language': 'zh',
+                    'enable_itn': False,
+                },
+            },
         ).strip()
 
     def synthesize_speech(self, text: str, model: str, timeout_sec: float) -> Optional[bytes]:
@@ -152,7 +159,7 @@ class QwenClient:
         text: str,
         model: str,
         timeout_sec: float,
-        voice: str = 'Cherry',
+        voice: str = 'Serena',
         language_type: str = 'Chinese',
     ) -> Optional[bytes]:
         if not self.api_key:

@@ -58,7 +58,7 @@ def generate_launch_description():
         DeclareLaunchArgument('audio_device', default_value='default'),
         DeclareLaunchArgument('audio_input_device', default_value='default'),
         DeclareLaunchArgument('audio_output_device', default_value='default'),
-        DeclareLaunchArgument('tts_voice', default_value='Cherry'),
+        DeclareLaunchArgument('tts_voice', default_value='Serena'),
         DeclareLaunchArgument('tts_language_type', default_value='Chinese'),
         DeclareLaunchArgument('enable_voice', default_value='false'),
         DeclareLaunchArgument('enable_tts', default_value='false'),

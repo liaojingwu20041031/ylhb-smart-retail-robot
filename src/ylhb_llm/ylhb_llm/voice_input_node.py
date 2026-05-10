@@ -23,7 +23,7 @@ class VoiceInputNode(Node):
         self.declare_parameter('enabled', False)
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('asr_model', 'qwen3-asr-flash')
-        self.declare_parameter('request_timeout_sec', 5.0)
+        self.declare_parameter('request_timeout_sec', 15.0)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)

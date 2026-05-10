@@ -133,7 +133,8 @@ export DASHSCOPE_API_KEY=你的DashScopeKey
   enable_voice:=true \
   enable_tts:=true \
   audio_input_device:=plughw:CARD=Luna,DEV=0 \
-  audio_output_device:=plughw:CARD=Luna,DEV=0
+  audio_output_device:=plughw:CARD=Luna,DEV=0 \
+  tts_voice:=Serena
 ```
 
 也可以直接调用一次录音识别服务：
@@ -148,7 +149,7 @@ ros2 service call /retail_ai/capture_voice std_srvs/srv/Trigger "{}"
 ./scripts/run_on_jetson.sh competition
 ```
 
-`competition` 默认启用 eMeet Luna 语音输入和播报，设备为 `plughw:CARD=Luna,DEV=0`。启动后在 UI 的“系统控制”页点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动开其它终端。若现场需要临时静音：
+`competition` 默认启用 eMeet Luna 语音输入和播报，设备为 `plughw:CARD=Luna,DEV=0`，播报默认使用 `Serena` 女声音色。启动后在 UI 的“系统控制”页点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动开其它终端。若现场需要临时静音：
 
 ```bash
 ./scripts/run_on_jetson.sh competition enable_tts:=false

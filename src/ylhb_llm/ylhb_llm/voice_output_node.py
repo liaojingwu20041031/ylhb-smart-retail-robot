@@ -24,7 +24,7 @@ class VoiceOutputNode(Node):
         self.declare_parameter('audio_output_device', 'default')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('tts_model', 'qwen3-tts-flash')
-        self.declare_parameter('tts_voice', 'Cherry')
+        self.declare_parameter('tts_voice', 'Serena')
         self.declare_parameter('tts_language_type', 'Chinese')
         self.declare_parameter('request_timeout_sec', 5.0)
 

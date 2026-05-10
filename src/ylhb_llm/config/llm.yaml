@@ -121,7 +121,7 @@ system_supervisor_node:
     audio_output_device: default
     asr_model: qwen3-asr-flash
     tts_model: qwen3-tts-flash
-    tts_voice: Cherry
+    tts_voice: Serena
     tts_language_type: Chinese
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
@@ -182,7 +182,7 @@ voice_output_node:
 
     # TTS 模型。若账号未开通该模型，需要按百炼控制台可用模型 ID 替换。
     tts_model: qwen3-tts-flash
-    tts_voice: Cherry
+    tts_voice: Serena
     tts_language_type: Chinese
 
     # TTS 请求超时，单位秒。播报内容较长时可适当调大。

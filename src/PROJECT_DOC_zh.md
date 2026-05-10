@@ -198,6 +198,12 @@ cd ~/ros2_ws
 
 `run_on_jetson.sh` 会自动加载 `/opt/ros/$ROS_DISTRO/setup.bash` 和 `~/ros2_ws/install/setup.bash`，并且在加载时临时关闭 `set -u`，避免 ROS 官方 setup 脚本读取未定义变量时报错。
 
+`competition` 默认启用 eMeet Luna 语音输入和 TTS 播报，设备为 `plughw:CARD=Luna,DEV=0`。启动后进入 UI 的“系统控制”页，点击“一键启动比赛节点”，由总控台启动底盘/雷达、ZED、感知和导航；不需要再手动打开其它终端。若现场需要临时静音：
+
+```bash
+./scripts/run_on_jetson.sh competition enable_tts:=false
+```
+
 比赛现场接 Jetson 物理显示屏时使用本机显示：
 
 ```bash
@@ -262,6 +268,10 @@ ibus list-engine | grep -i pinyin
 | `display` | UI 显示目标 | `:0` |
 | `force_local_display` | 是否强制使用 `display` 覆盖 SSH DISPLAY | `true` |
 | `initial_system_mode` | 初始系统状态 | `ready` |
+| `enable_voice` | 是否启用 eMeet Luna 语音输入 | `true` |
+| `enable_tts` | 是否启用 eMeet Luna TTS 播报 | `true` |
+| `audio_input_device` | 录音设备 | `plughw:CARD=Luna,DEV=0` |
+| `audio_output_device` | 播放设备 | `plughw:CARD=Luna,DEV=0` |
 
 B-1 图片导入规则：
 
@@ -303,6 +313,7 @@ UI 的“系统控制”页通过 `/retail_ai/system_command` 向 `system_superv
 系统控制页提供：
 
 ```text
+一键启动/停止比赛节点
 启动/停止底盘和雷达 bringup
 启动/停止手动建图
 保存地图
@@ -313,6 +324,8 @@ UI 的“系统控制”页通过 `/retail_ai/system_command` 向 `system_superv
 软件急停
 返回准备状态
 ```
+
+“一键启动比赛节点”会依次发送启动底盘/雷达、ZED、感知、导航和 AI 任务层命令。`competition` 启动时 AI 任务层已经内嵌运行，因此 supervisor 会把 `llm` 状态显示为 `embedded`，不会重复启动同名 AI 节点。“一键停止比赛节点”会停止导航、感知、ZED 和底盘/雷达，保留 UI、AI 任务层和语音节点继续运行。
 
 常用系统命令：
 

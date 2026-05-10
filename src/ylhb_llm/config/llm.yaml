@@ -113,6 +113,17 @@ system_supervisor_node:
     map_output_dir: /home/nvidia/ros2_ws/src/maps
     default_navigation_map: /home/nvidia/ros2_ws/src/my_map.yaml
     perception_model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+    embedded_task_layer: true
+    enable_voice: false
+    enable_tts: false
+    audio_device: default
+    audio_input_device: default
+    audio_output_device: default
+    asr_model: qwen3-asr-flash
+    tts_model: qwen3-tts-flash
+    tts_voice: Cherry
+    tts_language_type: Chinese
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
 voice_input_node:
   ros__parameters:

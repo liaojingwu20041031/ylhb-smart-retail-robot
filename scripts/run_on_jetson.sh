@@ -95,8 +95,10 @@ case "${MODE}" in
       enable_task_layer:=true \
       enable_display_ui:=true \
       enable_system_supervisor:=true \
-      enable_voice:=false \
-      enable_tts:=false \
+      enable_voice:=true \
+      enable_tts:=true \
+      audio_input_device:=plughw:CARD=Luna,DEV=0 \
+      audio_output_device:=plughw:CARD=Luna,DEV=0 \
       display:="${DISPLAY}" \
       "$@"
     ;;

@@ -508,6 +508,12 @@ class RetailDisplayWindow(QWidget):
             self.system_status_table.setItem(row, 1, QTableWidgetItem('unknown'))
         layout.addWidget(self.system_status_table)
 
+        competition_box = QGroupBox('比赛一键控制')
+        competition_layout = QGridLayout(competition_box)
+        self.add_system_button(competition_layout, 0, 0, '一键启动比赛节点', 'start_competition_stack')
+        self.add_system_button(competition_layout, 0, 1, '一键停止比赛节点', 'stop_competition_stack', mode='ready')
+        layout.addWidget(competition_box)
+
         mapping_box = QGroupBox('建图控制')
         mapping_layout = QGridLayout(mapping_box)
         self.add_system_button(mapping_layout, 0, 0, '启动建图', 'start_mapping', mode='mapping')

@@ -50,12 +50,34 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('map_output_dir', workspace_path('src', 'maps'))
         self.declare_parameter('default_navigation_map', workspace_path('src', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
+        self.declare_parameter('embedded_task_layer', True)
+        self.declare_parameter('enable_voice', False)
+        self.declare_parameter('enable_tts', False)
+        self.declare_parameter('audio_device', 'default')
+        self.declare_parameter('audio_input_device', 'default')
+        self.declare_parameter('audio_output_device', 'default')
+        self.declare_parameter('asr_model', 'qwen3-asr-flash')
+        self.declare_parameter('tts_model', 'qwen3-tts-flash')
+        self.declare_parameter('tts_voice', 'Cherry')
+        self.declare_parameter('tts_language_type', 'Chinese')
+        self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
 
         self.workspace_dir = os.path.expanduser(str(self.get_parameter('workspace_dir').value))
         self.ros_distro = str(self.get_parameter('ros_distro').value)
         self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
+        self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
+        self.enable_voice = bool(self.get_parameter('enable_voice').value)
+        self.enable_tts = bool(self.get_parameter('enable_tts').value)
+        self.audio_device = str(self.get_parameter('audio_device').value)
+        self.audio_input_device = str(self.get_parameter('audio_input_device').value)
+        self.audio_output_device = str(self.get_parameter('audio_output_device').value)
+        self.asr_model = str(self.get_parameter('asr_model').value)
+        self.tts_model = str(self.get_parameter('tts_model').value)
+        self.tts_voice = str(self.get_parameter('tts_voice').value)
+        self.tts_language_type = str(self.get_parameter('tts_language_type').value)
+        self.dashscope_base_url = str(self.get_parameter('dashscope_base_url').value)
         self.lock = threading.Lock()
         self.last_command = ''
         self.last_success = True
@@ -76,8 +98,7 @@ class SystemSupervisorNode(Node):
             ),
             'llm': ManagedProcess(
                 'llm',
-                'ros2 launch ylhb_llm llm.launch.py '
-                'enable_display_ui:=false enable_system_supervisor:=false',
+                self.llm_launch_command(),
             ),
         }
 
@@ -143,6 +164,12 @@ class SystemSupervisorNode(Node):
         if command == 'emergency_stop':
             self.emergency_stop()
             return
+        if command == 'start_competition_stack':
+            self.start_competition_stack()
+            return
+        if command == 'stop_competition_stack':
+            self.stop_competition_stack()
+            return
         if command == 'return_ready':
             self.publish_mode('ready')
             self.set_result(command, True, '已返回准备状态')
@@ -150,6 +177,13 @@ class SystemSupervisorNode(Node):
         self.set_result(command, False, f'Unknown system command: {command}')
 
     def start_process(self, name: str) -> None:
+        if name == 'llm' and self.embedded_task_layer:
+            self.set_result(
+                'start_llm',
+                True,
+                self.voice_summary('AI task layer is embedded in competition launch'),
+            )
+            return
         proc = self.processes[name]
         with self.lock:
             if proc.is_running():
@@ -167,6 +201,13 @@ class SystemSupervisorNode(Node):
             self.set_result_locked(f'start_{name}', True, f'{name} started')
 
     def stop_process(self, name: str) -> None:
+        if name == 'llm' and self.embedded_task_layer:
+            self.set_result(
+                'stop_llm',
+                True,
+                'AI task layer is embedded in competition launch; keep it running with UI and voice.',
+            )
+            return
         proc = self.processes[name]
         with self.lock:
             if not proc.is_running():
@@ -185,6 +226,19 @@ class SystemSupervisorNode(Node):
                 self.set_result_locked(f'stop_{name}', True, f'{name} stopped')
             except Exception as exc:
                 self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
+
+    def start_competition_stack(self) -> None:
+        for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
+            self.start_process(name)
+            time.sleep(0.3)
+        self.set_result('start_competition_stack', True, '比赛节点启动命令已发送')
+
+    def stop_competition_stack(self) -> None:
+        for name in ('navigation', 'perception', 'zed', 'bringup'):
+            self.stop_process(name)
+            time.sleep(0.2)
+        self.publish_mode('ready')
+        self.set_result('stop_competition_stack', True, '比赛运动、导航和感知节点已停止，AI/UI 保持运行')
 
     def save_map(self, map_name: str) -> None:
         safe_name = ''.join(c for c in map_name if c.isalnum() or c in ('_', '-')).strip('_-')
@@ -235,6 +289,28 @@ class SystemSupervisorNode(Node):
             f'exec {command}'
         )
 
+    def llm_launch_command(self) -> str:
+        return (
+            'ros2 launch ylhb_llm llm.launch.py '
+            'enable_display_ui:=false enable_system_supervisor:=false '
+            f'enable_voice:={str(self.enable_voice).lower()} '
+            f'enable_tts:={str(self.enable_tts).lower()} '
+            f'audio_device:={self.audio_device} '
+            f'audio_input_device:={self.audio_input_device} '
+            f'audio_output_device:={self.audio_output_device} '
+            f'asr_model:={self.asr_model} '
+            f'tts_model:={self.tts_model} '
+            f'tts_voice:={self.tts_voice} '
+            f'tts_language_type:={self.tts_language_type} '
+            f'dashscope_base_url:={self.dashscope_base_url}'
+        )
+
+    def voice_summary(self, prefix: str) -> str:
+        return (
+            f'{prefix}; voice={self.enable_voice}, tts={self.enable_tts}, '
+            f'input={self.audio_input_device}, output={self.audio_output_device}'
+        )
+
     def set_result(self, command: str, success: bool, message: str) -> None:
         with self.lock:
             self.set_result_locked(command, success, message)
@@ -259,7 +335,10 @@ class SystemSupervisorNode(Node):
             'message': self.last_message,
         }
         for name, proc in self.processes.items():
-            payload[name] = 'running' if proc.is_running() else 'stopped'
+            if name == 'llm' and self.embedded_task_layer:
+                payload[name] = 'embedded'
+            else:
+                payload[name] = 'running' if proc.is_running() else 'stopped'
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.status_pub.publish(msg)

@@ -104,6 +104,10 @@ class VoiceOutputNode(Node):
         try:
             audio = self.tts_cache.get(cache_key) if self.enable_tts_cache else None
             if audio is None:
+                self.get_logger().info(
+                    f'TTS 开始合成：task_id={task_id}, model={self.tts_model}, '
+                    f'voice={self.tts_voice}, text_len={len(text)}'
+                )
                 audio = self.qwen.synthesize_speech_bytes(
                     text=text,
                     model=self.tts_model,
@@ -111,13 +115,20 @@ class VoiceOutputNode(Node):
                     voice=self.tts_voice,
                     language_type=self.tts_language_type,
                 )
+                self.get_logger().info(
+                    f'TTS 合成完成：task_id={task_id}, audio_bytes={len(audio) if audio else 0}'
+                )
                 if audio and self.enable_tts_cache:
                     self.remember_tts_cache(cache_key, audio)
+            else:
+                self.get_logger().info(
+                    f'TTS 命中缓存：task_id={task_id}, text_len={len(text)}, audio_bytes={len(audio)}'
+                )
         except QwenClientError as exc:
-            self.get_logger().warn(f'TTS 合成失败：{exc}')
+            self.get_logger().warn(f'TTS 合成失败：task_id={task_id}, error={exc}')
             return
         if not audio:
-            self.get_logger().warn('TTS 未返回音频，仅记录播报文本。')
+            self.get_logger().warn(f'TTS 未返回音频：task_id={task_id}')
             return
         with tempfile.NamedTemporaryFile(prefix='ylhb_tts_', suffix='.wav', delete=False) as f:
             f.write(audio)
@@ -133,18 +144,22 @@ class VoiceOutputNode(Node):
             cmd.append(audio_path)
             duration = self.wav_duration_sec(audio_path)
             play_timeout = min(45.0, max(8.0, duration + 5.0))
+            self.get_logger().info(
+                f'音频播放开始：task_id={task_id}, device={self.audio_device}, '
+                f'duration={duration:.2f}s, timeout={play_timeout:.2f}s, cmd={" ".join(cmd)}'
+            )
             result = subprocess.run(cmd, check=False, timeout=play_timeout)
             if result.returncode != 0:
                 self.get_logger().warn(
-                    f'音频播放失败：aplay 退出码={result.returncode}，设备={self.audio_device}，'
-                    '可能是录音节点正在占用同一个声卡。'
+                    f'音频播放失败：task_id={task_id}, aplay_exit={result.returncode}, '
+                    f'device={self.audio_device}'
                 )
+            else:
+                self.get_logger().info(f'音频播放完成：task_id={task_id}')
         except subprocess.TimeoutExpired:
-            self.get_logger().warn(f'音频播放超时，已停止播放进程：{audio_path}')
+            self.get_logger().warn(f'音频播放超时：task_id={task_id}, path={audio_path}')
         except Exception as exc:
-            self.get_logger().warn(
-                f'音频播放异常：{exc}。如果出现 Device or resource busy，请检查输入输出设备是否都使用了 plughw。'
-            )
+            self.get_logger().warn(f'音频播放异常：task_id={task_id}, error={exc}')
         finally:
             self.current_task_id = ''
             self.publish_status_once()

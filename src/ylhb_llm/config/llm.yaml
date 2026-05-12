@@ -196,13 +196,13 @@ voice_session_node:
     wake_aliases: [小零小零, 小玲小玲, 小灵小灵, 小林小林, 小零, 小玲]
     sample_rate: 16000
     frame_ms: 30
-    energy_threshold: 550
-    vad_silence_sec: 0.75
+    energy_threshold: 800
+    vad_silence_sec: 0.85
     min_voice_sec: 0.5
     max_utterance_sec: 6.0
     session_idle_timeout_sec: 35.0
     max_listen_wait_sec: 8.0
-    voice_start_frames_required: 3
+    voice_start_frames_required: 4
     asr_empty_silent_first: true
     asr_fail_prompt_threshold: 2
     asr_fail_standby_threshold: 3

@@ -21,6 +21,15 @@ CONFIRM_WORDS = ('确认', '确定', '就这个', '我要这个', '开始取货'
 WEAK_CONFIRM_WORDS = ('是', '对', '好', '可以', '嗯')
 NEGATIVE_WORDS = ('不需要', '不用', '不要', '算了')
 MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
+GENERIC_CATEGORY_WORDS = ('零食', '饮料', '水果', '生活用品', '日用品', '吃的', '喝的')
+REJECT_RECOMMENDATION_WORDS = (
+    '我没有说',
+    '我没说',
+    '为什么说',
+    '不是这个',
+    '你理解错了',
+    '不是薯片',
+)
 WAIT_CONFIRM_PRODUCT = 'confirm_product'
 WAIT_CHOOSE_ALTERNATIVE = 'choose_alternative'
 WAIT_ASK_ADDON = 'ask_addon'
@@ -333,6 +342,10 @@ class RetailTaskNode(Node):
                 self.say(task_id, '您可以重新说明想要的商品类型，我再为您推荐。', priority=6)
             return
 
+        if self.sales_dialogue.get('active') and self.is_reject_recommendation_text(text):
+            self.handle_reject_current_proposal(task_id, text)
+            return
+
         general_reply = self.try_local_general_qa(text, command_meta)
         if general_reply:
             self.say(task_id, general_reply, priority=7)
@@ -484,6 +497,41 @@ class RetailTaskNode(Node):
             return
         self.say(task_id, '请直接说商品名，或者说“确认”开始取货。', priority=5)
 
+    def handle_reject_current_proposal(self, task_id: str, text: str) -> None:
+        product_id = str(
+            self.sales_dialogue.get('pending_product_id')
+            or self.sales_dialogue.get('last_product_id')
+            or ''
+        )
+        rejected = [str(v) for v in self.sales_dialogue.get('rejected_product_ids', []) if v]
+        if product_id and product_id not in rejected:
+            rejected.append(product_id)
+
+        reply = (
+            '抱歉，我刚才只是根据您的需求做了默认推荐，并不是说您已经指定了这个商品。'
+            '您可以继续说明偏好，比如甜一点、咸一点、便宜点，或者直接说具体商品名。'
+        )
+        history = list(self.sales_dialogue.get('history') or [])
+        history.append({'role': 'user', 'text': text})
+        history.append({'role': 'assistant', 'text': reply})
+        self.sales_dialogue = {
+            **self.sales_dialogue,
+            'active': True,
+            'state': 'asking_clarification',
+            'last_action': 'reject_recommendation',
+            'pending_product_id': '',
+            'pending_product_name': '',
+            'waiting_for': WAIT_CLARIFY_PRODUCT,
+            'proposal_id': '',
+            'pending_proposal': {},
+            'rejected_product_ids': sorted(set(rejected)),
+            'last_reply': reply,
+            'history': history[-8:],
+            'expires_at': time.time() + 120.0,
+        }
+        self.say(task_id, reply, priority=7)
+        self.publish_sales_dialogue_status()
+
     def try_local_fast_sales_decision(
         self,
         text: str,
@@ -492,7 +540,7 @@ class RetailTaskNode(Node):
         source = str(command_meta.get('source') or 'text')
         normalized = self.normalize_cn(text)
         product = self.catalog.match_text(normalized)
-        if product is not None:
+        if product is not None and not self.is_generic_category_text(normalized):
             if source == 'voice' and self.voice_requires_confirmation:
                 return self.build_propose_decision(
                     product=product,
@@ -509,10 +557,14 @@ class RetailTaskNode(Node):
                 )
             return self.build_execute_decision(product, confidence=0.96)
 
-        if any(k in normalized for k in ('口渴', '喝水', '渴了', '想喝水', '解渴')):
+        if any(k in normalized for k in ('口渴', '喝水', '渴了', '想喝水', '解渴', '饮料', '喝的')):
             return self.decision_by_need_category('thirsty', normalized)
-        if any(k in normalized for k in ('饿', '吃东西', '零食', '解馋')):
+        if any(k in normalized for k in ('饿', '吃东西', '吃的')):
             return self.decision_by_need_category('hungry', normalized)
+        if any(k in normalized for k in ('零食', '解馋')):
+            return self.decision_by_need_category('snack', normalized)
+        if '水果' in normalized:
+            return self.decision_by_need_category('fruit', normalized)
         if any(k in normalized for k in ('困了', '没精神', '提神')):
             return self.decision_by_need_category('sleepy', normalized)
         if any(k in normalized for k in ('生活用品', '日用品')):
@@ -520,6 +572,14 @@ class RetailTaskNode(Node):
         if any(k in normalized for k in ('擦嘴', '纸巾', '抽纸', '擦东西', '弄脏', '清洁')):
             return self.decision_by_need_category('tissue', normalized)
         return None
+
+    def is_generic_category_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return any(word in normalized for word in GENERIC_CATEGORY_WORDS)
+
+    def is_reject_recommendation_text(self, text: str) -> bool:
+        normalized = self.normalize_cn(text)
+        return any(word in normalized for word in REJECT_RECOMMENDATION_WORDS)
 
     def try_local_general_qa(self, text: str, command_meta: Dict[str, Any]) -> str:
         del command_meta
@@ -739,10 +799,10 @@ class RetailTaskNode(Node):
         if need_text in ('已经明确说出了商品', 'explicit_product'):
             prefix = f'好的，我已经帮您选中{product.name}。'
         else:
-            prefix = f'我理解您现在{need_text}。'
+            prefix = f'我理解您现在{need_text}，我先为您推荐{product.name}。'
         reply = (
             f'{prefix}'
-            f'我主推{product.name}，因为{reason}。'
+            f'因为{reason}。'
             f'{alt_text}'
             f'需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
         )

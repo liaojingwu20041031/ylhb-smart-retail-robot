@@ -294,6 +294,11 @@ class VoiceSessionNode(Node):
         active = False
         quiet = 0
         loud = 0
+        effective_energy_threshold = self.energy_threshold
+        effective_start_frames = self.voice_start_frames_required
+        if not self.awakened:
+            effective_energy_threshold = int(self.energy_threshold * 1.8)
+            effective_start_frames = max(self.voice_start_frames_required, 6)
         try:
             while self.session_enabled and not self.stop_event.is_set():
                 now = time.monotonic()
@@ -313,10 +318,10 @@ class VoiceSessionNode(Node):
                     return b''
                 energy = audioop.rms(chunk, 2)
                 if not active:
-                    if energy >= self.energy_threshold:
+                    if energy >= effective_energy_threshold:
                         loud += 1
                         pending_loud_frames.append(chunk)
-                        if loud >= self.voice_start_frames_required:
+                        if loud >= effective_start_frames:
                             active = True
                             quiet = 0
                             frames.extend(pending_loud_frames)
@@ -325,7 +330,7 @@ class VoiceSessionNode(Node):
                         loud = 0
                         pending_loud_frames = []
                     continue
-                if energy >= self.energy_threshold:
+                if energy >= effective_energy_threshold:
                     quiet = 0
                 else:
                     quiet += 1
@@ -358,9 +363,12 @@ class VoiceSessionNode(Node):
             try:
                 return self.qwen.transcribe_audio(path, self.asr_model, self.request_timeout_sec).strip()
             except QwenClientError as exc:
+                error_text = str(exc).lower()
+                if 'response has no text' in error_text and not self.awakened:
+                    self.last_error = ''
+                    return ''
                 self.last_error = f'语音识别失败：{exc}'
                 self.get_logger().warn(self.last_error)
-                error_text = str(exc).lower()
                 if 'timed out' in error_text or 'timeout' in error_text:
                     return ASR_TIMEOUT_MARKER
                 return ''
@@ -451,6 +459,8 @@ class VoiceSessionNode(Node):
         return command.strip()
 
     def say(self, task_id: str, text: str, priority: int = 5) -> None:
+        if task_id == 'voice_session':
+            self.pause_listen_until = max(self.pause_listen_until, time.monotonic() + 2.0)
         msg = SayText()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.task_id = task_id

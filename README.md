@@ -43,33 +43,33 @@
 ```mermaid
 flowchart TB
     subgraph Interaction[交互与比赛入口]
-      User[用户 / 裁判\n语音 · 文字 · 任务书图片]
-      UI[比赛显示屏 UI\nA/B/C/D 任务入口 · 购物车 · 总控台]
-      Voice[eMeet Luna\n唤醒词 · 连续语音 · ASR]
-      TTS[TTS 播报\n推荐结果 · 结算状态 · 导航反馈]
+      User["用户 / 裁判<br/>语音 · 文字 · 任务书图片"]
+      UI["比赛显示屏 UI<br/>A/B/C/D 任务入口 · 购物车 · 总控台"]
+      Voice["eMeet Luna<br/>唤醒词 · 连续语音 · ASR"]
+      TTS["TTS 播报<br/>推荐结果 · 结算状态 · 导航反馈"]
     end
 
     subgraph Intelligence[AI 任务编排层]
-      TaskCore[ylhb_llm 任务核心\n意图解析 · 商品推荐 · 任务状态机]
-      Qwen[DashScope / Qwen\n视觉理解 · 文本推理 · ASR/TTS]
-      EventBus[/retail_ai/task_event/\n任务事件与 UI 状态同步]
+      TaskCore["ylhb_llm 任务核心<br/>意图解析 · 商品推荐 · 任务状态机"]
+      Qwen["DashScope / Qwen<br/>视觉理解 · 文本推理 · ASR/TTS"]
+      EventBus["/retail_ai/task_event/<br/>任务事件与 UI 状态同步"]
     end
 
     subgraph ROS[ROS 2 通信与运行时]
-      Topics[核心话题\n/cmd_vel · /odom · /scan · /image · /detections]
-      Launch[run_on_jetson.sh\nbringup · zed · perception · navigation · llm]
-      Supervisor[System Supervisor\n比赛节点编排与健康状态]
+      Topics["核心话题<br/>/cmd_vel · /odom · /scan · /image · /detections"]
+      Launch["run_on_jetson.sh<br/>bringup · zed · perception · navigation · llm"]
+      Supervisor["System Supervisor<br/>比赛节点编排与健康状态"]
     end
 
     subgraph Robot[机器人执行栈]
-      Base[底盘控制\nSTM32 · 电机 · 轮式里程计]
-      IMU[IMU\n姿态与角速度]
-      Lidar[RPLidar\n2D 激光扫描]
-      ZED[ZED 2i\nRGB · Depth · Camera Info]
-      EKF[robot_localization\nEKF 位姿融合]
-      SLAM[SLAM Toolbox\n建图与地图保存]
-      Nav2[Nav2 / AMCL\n定位 · 路径规划 · 避障]
-      Perception[YOLO26 + TensorRT\n商品检测 · 调试图像]
+      Base["底盘控制<br/>STM32 · 电机 · 轮式里程计"]
+      IMU["IMU<br/>姿态与角速度"]
+      Lidar["RPLidar<br/>2D 激光扫描"]
+      ZED["ZED 2i<br/>RGB · Depth · Camera Info"]
+      EKF["robot_localization<br/>EKF 位姿融合"]
+      SLAM["SLAM Toolbox<br/>建图与地图保存"]
+      Nav2["Nav2 / AMCL<br/>定位 · 路径规划 · 避障"]
+      Perception["YOLO26 + TensorRT<br/>商品检测 · 调试图像"]
     end
 
     User --> UI

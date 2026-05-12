@@ -38,7 +38,7 @@ if [ -z "$message" ]; then
 fi
 [ -n "$message" ] || die "必须提供提交说明"
 
-if git diff --quiet && git diff --cached --quiet; then
+if [ -z "$(git status --porcelain)" ]; then
   printf '没有需要发布的改动。\n'
   exit 0
 fi
@@ -52,6 +52,13 @@ git status --short
 printf '\n改动摘要:\n'
 git diff --stat
 git diff --cached --stat
+untracked_files="$(git ls-files --others --exclude-standard)"
+if [ -n "$untracked_files" ]; then
+  printf '\n未跟踪文件（将随 git add -A 提交）:\n'
+  while IFS= read -r path; do
+    printf '  %s\n' "$path"
+  done <<< "$untracked_files"
+fi
 
 if ! confirm; then
   printf '已取消。脚本没有暂存、提交或推送任何改动。\n'
@@ -66,6 +73,15 @@ if git diff --cached --quiet; then
 fi
 
 git commit -m "$message"
-git push origin "$branch"
+if ! git push origin "$branch"; then
+  printf '\n普通推送失败，正在使用 HTTP/1.1 兼容模式重试...\n' >&2
+  if ! git -c http.version=HTTP/1.1 push origin "$branch"; then
+    printf '\n本地提交已创建，但远程推送失败。\n' >&2
+    printf '可稍后重试以下命令:\n' >&2
+    printf '  git push origin %s\n' "$branch" >&2
+    printf '  git -c http.version=HTTP/1.1 push origin %s\n' "$branch" >&2
+    exit 1
+  fi
+fi
 
 printf '\n已发布到 origin/%s。\n' "$branch"

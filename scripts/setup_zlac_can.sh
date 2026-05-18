@@ -3,13 +3,12 @@ set -euo pipefail
 
 iface="${1:-can0}"
 bitrate="${2:-500000}"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-protocol_dir="${repo_root}/官方通信协议"
+protocol_dir="/home/nvidia/ros2_ws/官方通信协议"
 
 echo "Setting up ${iface} for ZLAC8015D CANopen at ${bitrate} bps"
 
-sudo modprobe can
-sudo modprobe can_raw
+sudo modprobe can || true
+sudo modprobe can_raw || true
 
 if ip link show "${iface}" >/dev/null 2>&1; then
   sudo ip link set "${iface}" down || true
@@ -27,4 +26,3 @@ echo
 echo "Quick checks:"
 echo "  candump -tz ${iface}"
 echo "  cansend ${iface} 000#0101"
-

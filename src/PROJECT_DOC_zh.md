@@ -530,7 +530,7 @@ src/ylhb_base/
 ├── launch/mapping.launch.py             # 建图启动
 ├── launch/navigation.launch.py          # 导航启动
 ├── config/ekf.yaml                      # EKF 参数
-├── config/robot_geometry.yaml           # 底盘几何、限速、轮向、frame 参数
+├── config/base_kinematics.yaml          # 底盘运动学、限速、轮向、frame 参数
 ├── config/zlac8015d.yaml                # ZLAC8015D CANopen 通信和看门狗参数
 ├── config/slam_toolbox_params.yaml      # 建图参数
 ├── config/nav2_params.yaml              # Nav2 参数
@@ -830,7 +830,7 @@ ros2 launch ylhb_base bringup.launch.py base_backend:=stm32 base_port:=/dev/ttyS
 ZLAC 参数文件：
 
 ```text
-config/robot_geometry.yaml   # 轮径、轮距、最大线/角速度、左右轮方向、frame
+config/base_kinematics.yaml  # 轮半径、轮距、最大线/角速度、左右轮方向、frame
 config/zlac8015d.yaml        # CAN 接口、node_id、SDO 超时、看门狗、反馈/故障检查频率
 ```
 
@@ -861,7 +861,7 @@ teleop_twist_keyboard        # 手动键盘遥控时发布
 
 ```text
 /odom                      # 由底盘编码器积分推算出的基础轮式里程计发布话题
-/zlac8015d/status          # ZLAC 后端状态、心跳、实际左右轮 rpm
+/zlac8015d/status          # ZLAC 后端状态、心跳、实际左右轮 rpm；默认约 1Hz
 /zlac8015d/fault           # ZLAC 非零故障码；不会循环自动清故障
 ```
 
@@ -3118,7 +3118,7 @@ cd ~/ros2_ws
 candump -tz can0
 ros2 run ylhb_base zlac8015d_canopen_controller \
   --ros-args \
-  --params-file src/ylhb_base/config/robot_geometry.yaml \
+  --params-file src/ylhb_base/config/base_kinematics.yaml \
   --params-file src/ylhb_base/config/zlac8015d.yaml
 ```
 

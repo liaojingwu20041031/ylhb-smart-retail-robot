@@ -57,6 +57,16 @@ start_chinese_ime() {
 case "${MODE}" in
   bringup)
     shift || true
+    uses_stm32=false
+    for arg in "$@"; do
+      if [ "${arg}" = "base_backend:=stm32" ]; then
+        uses_stm32=true
+        break
+      fi
+    done
+    if [ "${uses_stm32}" != "true" ]; then
+      echo "INFO: ZLAC backend uses SocketCAN; if can0 is not configured, run: ./scripts/setup_zlac_can.sh can0 500000" >&2
+    fi
     exec ros2 launch ylhb_base bringup.launch.py "$@"
     ;;
   mapping)

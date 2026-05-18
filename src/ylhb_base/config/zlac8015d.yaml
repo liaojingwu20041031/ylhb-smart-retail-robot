@@ -3,15 +3,17 @@ zlac8015d_canopen_controller:
     can_interface: can0
     node_id: 1
     control_rate_hz: 50.0
-    feedback_rate_hz: 20.0
+    feedback_rate_hz: 30.0
     fault_check_rate_hz: 2.0
     can_poll_rate_hz: 200.0
     cmd_timeout_sec: 0.5
     sdo_timeout_ms: 200
-    fault_reset_on_start: true
+    status_rate_hz: 1.0
+    fault_reset_on_start: false
     stop_on_exit: true
     use_pdo: false
     target_velocity_unit_per_rpm: 1.0
     actual_velocity_unit_per_rpm: 10.0
-    acceleration_rpm_per_sec: 100
-    deceleration_rpm_per_sec: 100
+    profile_acceleration: 100
+    profile_deceleration: 100
+    protocol_docs_dir: "/home/nvidia/ros2_ws/官方通信协议"

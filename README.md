@@ -4,35 +4,60 @@
 
 ### ROS 2 + Jetson Orin Nano Super 驱动的多模态智慧零售机器人
 
-**一台会听、会看、会推荐、会导航的比赛级智能零售机器人。**  
-面向智慧零售竞赛场景，完整打通 **底盘控制 / SLAM 建图 / Nav2 导航 / ZED 2i 视觉 / YOLO 商品识别 / 大模型任务理解 / 语音交互 / 现场 UI 总控台**。
+**一台会听、会看、会推荐、会导航的比赛级智能零售机器人。**
+
+面向智慧零售竞赛场景，完整打通 **ZLAC8015D 底盘控制 / SLAM 建图 / Nav2 导航 / ZED 2i 视觉 / YOLO 商品识别 / 大模型任务理解 / 连续语音交互 / 现场 UI 总控台**。
 
 <p>
   <img alt="ROS 2 Humble" src="https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros&logoColor=white">
   <img alt="Ubuntu 22.04" src="https://img.shields.io/badge/Ubuntu-22.04-E95420?logo=ubuntu&logoColor=white">
   <img alt="Jetson Orin Nano" src="https://img.shields.io/badge/Jetson-Orin%20Nano%20Super-76B900?logo=nvidia&logoColor=white">
+  <img alt="SocketCAN" src="https://img.shields.io/badge/SocketCAN-ZLAC8015D-1F7A8C">
+  <img alt="Nav2" src="https://img.shields.io/badge/Nav2-SLAM%20%2B%20Navigation-5E35B1">
+  <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-YOLO26-76B900?logo=nvidia&logoColor=white">
+  <img alt="Qwen" src="https://img.shields.io/badge/Qwen-Multimodal%20AI-111827">
   <img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue">
   <img alt="Stars" src="https://img.shields.io/github/stars/liaojingwu20041031/ylhb-smart-retail-robot?style=social">
 </p>
 
-[项目亮点](#-项目亮点) · [系统架构](#-系统架构) · [快速开始](#-快速开始) · [比赛任务](#-比赛任务流程) · [详细文档](#-详细文档)
+<p>
+  <strong>比赛主线：</strong>
+  语音/文字任务理解 -> 货架导航 -> 商品识别 -> 推荐与确认 -> 取货/结算 -> 返回起点
+</p>
+
+<p>
+  <a href="#-快速开始">快速开始</a> ·
+  <a href="#-常用启动命令">启动命令</a> ·
+  <a href="#-比赛任务流程">比赛任务</a> ·
+  <a href="#-系统架构">系统架构</a> ·
+  <a href="src/PROJECT_DOC_zh.md">详细文档</a>
+</p>
+
+```bash
+./scripts/setup_zlac_can.sh can0 500000
+./scripts/run_on_jetson.sh competition
+```
 
 </div>
 
 ---
 
+## 🎯 项目定位
+
+这个仓库是一个面向 Jetson 本机部署的 ROS 2 工作区源码仓库，不是单节点 demo。它把底盘、传感器、导航、视觉检测、大模型任务理解、连续语音和比赛 UI 组织成一套可现场运行的机器人系统。
+
+默认底盘后端是 **ZLAC8015D V4 + SocketCAN/CANopen**；保留 STM32 串口后端作为回退方案。比赛现场推荐从 `./scripts/run_on_jetson.sh competition` 进入，由 UI 和 system supervisor 编排底层、视觉、导航和 AI 节点。
+
 ## ✨ 项目亮点
 
 | 方向 | 能力 |
 |---|---|
-| 🚗 机器人底盘 | 串口底盘控制、IMU 驱动、RPLidar 雷达、URDF 模型、EKF 融合 |
+| 🚗 机器人底盘 | ZLAC8015D SocketCAN 默认后端、STM32 串口回退、IMU 驱动、RPLidar 雷达、URDF 模型、EKF 融合 |
 | 🗺️ 建图与导航 | SLAM Toolbox 建图、AMCL 定位、Nav2 自主导航、地图保存与加载 |
 | 👁️ 视觉感知 | ZED 2i 图像订阅、YOLO26 商品检测、TensorRT 推理、检测结果发布 |
 | 🧠 多模态 AI | DashScope/Qwen 图片理解、文字/语音任务解析、商品推荐、结算播报 |
 | 🎙️ 连续语音 | eMeet Luna 麦克风输入、唤醒词连续语音会话、ASR 事件路由、TTS 播报 |
 | 🖥️ 比赛 UI | A/B/C/D 任务入口、B-1 图片预览、识别结果、购物车、总价、系统总控台 |
-
-这个仓库不是单个 demo，而是一个可在 Jetson 上本机构建、现场运行、面向比赛交付的 **ROS 2 工作区源码仓库**。
 
 > 本仓库不提交 `build/`、`install/`、`log/`、API Key 和模型二进制文件。克隆后需要在目标 Jetson 上本机构建。
 
@@ -62,7 +87,7 @@ flowchart TB
     end
 
     subgraph Robot[机器人执行栈]
-      Base["底盘控制<br/>STM32 · 电机 · 轮式里程计"]
+      Base["底盘控制<br/>ZLAC8015D 默认 · STM32 回退 · 轮式里程计"]
       IMU["IMU<br/>姿态与角速度"]
       Lidar["RPLidar<br/>2D 激光扫描"]
       ZED["ZED 2i<br/>RGB · Depth · Camera Info"]
@@ -108,6 +133,7 @@ flowchart TB
 ├── scripts/
 │   ├── install_jetson_dependencies.sh   # Jetson 依赖安装
 │   ├── build_on_jetson.sh               # 本机构建入口
+│   ├── setup_zlac_can.sh                # ZLAC8015D SocketCAN 配置
 │   └── run_on_jetson.sh                 # 现场运行入口
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、URDF、EKF、SLAM、Nav2
@@ -132,7 +158,8 @@ flowchart TB
 | 模块 | 设备 | 用途 |
 |---|---|---|
 | 主控 | Jetson Orin Nano Super | 运行 ROS 2、Nav2、感知节点、AI 任务层和显示屏 UI |
-| 底盘控制 | STM32 大脑底板 | 接收 `/cmd_vel`，控制电机并回传轮式里程计 |
+| 底盘控制 | ZLAC8015D V4 双轮毂伺服驱动器 | 默认后端；通过 SocketCAN/CANopen 接收 `/cmd_vel`，发布 `/odom`、`/zlac8015d/status`、`/zlac8015d/fault` |
+| 底盘回退 | STM32 大脑底板 | 串口回退后端；用于旧底盘链路调试和备用运行 |
 | 雷达 | RPLidar | 发布 `/scan`，用于 SLAM、AMCL 定位和 Nav2 避障 |
 | 相机 | ZED 2i | 发布 RGB 图、深度图和相机内参，供 YOLO 和 3D 粗定位使用 |
 | IMU | 底盘 IMU | 与轮式里程计进入 EKF，提高短时位姿稳定性 |
@@ -245,7 +272,11 @@ tts_voice:=Serena
 
 ```bash
 # 底盘、IMU、雷达、URDF 和 EKF
+./scripts/setup_zlac_can.sh can0 500000
 ./scripts/run_on_jetson.sh bringup
+
+# STM32 串口回退底盘
+./scripts/run_on_jetson.sh bringup base_backend:=stm32
 
 # ZED 2i
 ./scripts/run_on_jetson.sh zed

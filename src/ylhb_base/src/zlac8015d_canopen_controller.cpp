@@ -18,12 +18,15 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -83,12 +86,12 @@ class DifferentialDriveKinematics
 {
 public:
   DifferentialDriveKinematics(
-    double wheel_diameter, double wheel_track, double max_linear_velocity,
-    double max_angular_velocity, double left_direction, double right_direction)
-  : wheel_radius_(wheel_diameter * 0.5),
+    double wheel_radius, double wheel_track, double max_linear_speed,
+    double max_angular_speed, double left_direction, double right_direction)
+  : wheel_radius_(wheel_radius),
     wheel_track_(wheel_track),
-    max_linear_velocity_(max_linear_velocity),
-    max_angular_velocity_(max_angular_velocity),
+    max_linear_speed_(max_linear_speed),
+    max_angular_speed_(max_angular_speed),
     left_direction_(left_direction >= 0.0 ? 1.0 : -1.0),
     right_direction_(right_direction >= 0.0 ? 1.0 : -1.0)
   {
@@ -96,8 +99,8 @@ public:
 
   std::pair<double, double> twist_to_wheel_rpm(double linear_x, double angular_z) const
   {
-    const double vx = clamp_value(linear_x, -max_linear_velocity_, max_linear_velocity_);
-    const double wz = clamp_value(angular_z, -max_angular_velocity_, max_angular_velocity_);
+    const double vx = clamp_value(linear_x, -max_linear_speed_, max_linear_speed_);
+    const double wz = clamp_value(angular_z, -max_angular_speed_, max_angular_speed_);
     const double left_mps = vx - wz * wheel_track_ * 0.5;
     const double right_mps = vx + wz * wheel_track_ * 0.5;
     const double meters_per_rev = 2.0 * M_PI * wheel_radius_;
@@ -117,8 +120,8 @@ public:
 private:
   double wheel_radius_;
   double wheel_track_;
-  double max_linear_velocity_;
-  double max_angular_velocity_;
+  double max_linear_speed_;
+  double max_angular_speed_;
   double left_direction_;
   double right_direction_;
 };
@@ -133,6 +136,19 @@ public:
     uint8_t command = 0;
     uint32_t raw = 0;
     uint8_t size = 0;
+  };
+
+  enum class EventType
+  {
+    Heartbeat,
+    SdoResponse
+  };
+
+  struct CanEvent
+  {
+    EventType type = EventType::SdoResponse;
+    uint8_t heartbeat_state = 0;
+    SdoResponse sdo {};
   };
 
   Zlac8015DCanopenClient(
@@ -236,7 +252,7 @@ public:
     return write_i32(kTargetVelocity, 0x03, static_cast<int32_t>(packed));
   }
 
-  bool initialize(bool fault_reset_on_start, int acceleration_rpm_per_sec, int deceleration_rpm_per_sec)
+  bool initialize(bool fault_reset_on_start, int profile_acceleration, int profile_deceleration)
   {
     if (fault_reset_on_start && !write_and_wait_u16(kControlWord, 0x00, 0x0080)) {
       return false;
@@ -248,16 +264,16 @@ public:
 
     return write_and_wait_u16(kVendorControlMode, 0x00, 1) &&
            write_and_wait_u8(kModesOfOperation, 0x00, 3) &&
-           write_and_wait_i32(kProfileAcceleration, 0x01, acceleration_rpm_per_sec) &&
-           write_and_wait_i32(kProfileAcceleration, 0x02, acceleration_rpm_per_sec) &&
-           write_and_wait_i32(kProfileDeceleration, 0x01, deceleration_rpm_per_sec) &&
-           write_and_wait_i32(kProfileDeceleration, 0x02, deceleration_rpm_per_sec) &&
+           write_and_wait_i32(kProfileAcceleration, 0x01, profile_acceleration) &&
+           write_and_wait_i32(kProfileAcceleration, 0x02, profile_acceleration) &&
+           write_and_wait_i32(kProfileDeceleration, 0x01, profile_deceleration) &&
+           write_and_wait_i32(kProfileDeceleration, 0x02, profile_deceleration) &&
            write_and_wait_u16(kControlWord, 0x00, 0x0006) &&
            write_and_wait_u16(kControlWord, 0x00, 0x0007) &&
            write_and_wait_u16(kControlWord, 0x00, 0x000F);
   }
 
-  std::optional<SdoResponse> poll_once()
+  std::optional<CanEvent> poll_once()
   {
     if (socket_fd_ < 0) {
       return std::nullopt;
@@ -279,7 +295,10 @@ public:
     if (cob_id == static_cast<canid_t>(0x700 + node_id_)) {
       heartbeat_state_ = frame.can_dlc > 0 ? frame.data[0] : 0;
       heartbeat_seen_ = true;
-      return std::nullopt;
+      CanEvent event;
+      event.type = EventType::Heartbeat;
+      event.heartbeat_state = heartbeat_state_;
+      return event;
     }
     if (cob_id != static_cast<canid_t>(0x580 + node_id_) || frame.can_dlc < 8) {
       RCLCPP_DEBUG(logger_, "Ignoring CAN frame %s", frame_to_string(frame).c_str());
@@ -291,7 +310,10 @@ public:
       const uint32_t abort_code = frame.data[4] | (frame.data[5] << 8) |
         (frame.data[6] << 16) | (frame.data[7] << 24);
       RCLCPP_ERROR(logger_, "SDO abort 0x%04X:%02X code=0x%08X", index, subindex, abort_code);
-      return SdoResponse{index, subindex, frame.data[0], abort_code, 4};
+      CanEvent event;
+      event.type = EventType::SdoResponse;
+      event.sdo = SdoResponse{index, subindex, frame.data[0], abort_code, 4};
+      return event;
     }
 
     const uint16_t index = frame.data[1] | (frame.data[2] << 8);
@@ -299,7 +321,10 @@ public:
     const uint32_t raw = frame.data[4] | (frame.data[5] << 8) |
       (frame.data[6] << 16) | (frame.data[7] << 24);
     const uint8_t size = response_size(frame.data[0]);
-    return SdoResponse{index, subindex, frame.data[0], raw, size};
+    CanEvent event;
+    event.type = EventType::SdoResponse;
+    event.sdo = SdoResponse{index, subindex, frame.data[0], raw, size};
+    return event;
   }
 
   void set_clock(rclcpp::Clock::SharedPtr clock) { clock_ = clock; }
@@ -318,7 +343,7 @@ public:
 
   std::optional<uint32_t> decode_fault(const SdoResponse & response) const
   {
-    if (response.index != kFaultCode) {
+    if (response.index != kFaultCode || response.subindex != 0x00) {
       return std::nullopt;
     }
     return response.raw;
@@ -379,8 +404,10 @@ private:
         std::chrono::steady_clock::now() - start).count() < sdo_timeout_ms_)
     {
       auto response = poll_once();
-      if (response && response->index == index && response->subindex == subindex) {
-        return response->command == 0x60;
+      if (response && response->type == EventType::SdoResponse &&
+        response->sdo.index == index && response->sdo.subindex == subindex)
+      {
+        return response->sdo.command == 0x60;
       }
       rclcpp::sleep_for(2ms);
     }
@@ -493,7 +520,7 @@ public:
     load_parameters();
 
     kinematics_ = std::make_unique<DifferentialDriveKinematics>(
-      wheel_diameter_, wheel_track_, max_linear_velocity_, max_angular_velocity_,
+      wheel_radius_, wheel_track_, max_linear_speed_, max_angular_speed_,
       left_direction_, right_direction_);
     odom_integrator_ = std::make_unique<OdometryIntegrator>(odom_frame_, base_frame_);
     client_ = std::make_unique<Zlac8015DCanopenClient>(
@@ -514,7 +541,7 @@ public:
 
     online_ = client_->open_socket();
     if (online_) {
-      online_ = client_->initialize(fault_reset_on_start_, acceleration_rpm_per_sec_, deceleration_rpm_per_sec_);
+      online_ = client_->initialize(fault_reset_on_start_, profile_acceleration_, profile_deceleration_);
     }
     if (!online_) {
       RCLCPP_ERROR(get_logger(),
@@ -542,38 +569,66 @@ private:
   {
     declare_parameter<std::string>("can_interface", "can0");
     declare_parameter<int>("node_id", 1);
-    declare_parameter<double>("wheel_diameter", 0.152);
+    declare_parameter<double>("wheel_radius", 0.076);
+    declare_parameter<double>("wheel_diameter", 0.0);
     declare_parameter<double>("wheel_track", 0.25);
-    declare_parameter<double>("max_linear_velocity", 0.6);
-    declare_parameter<double>("max_angular_velocity", 1.2);
+    declare_parameter<double>("max_linear_speed", 0.6);
+    declare_parameter<double>("max_angular_speed", 1.2);
+    declare_parameter<double>("max_linear_velocity", 0.0);
+    declare_parameter<double>("max_angular_velocity", 0.0);
     declare_parameter<double>("left_direction", 1.0);
-    declare_parameter<double>("right_direction", 1.0);
+    declare_parameter<double>("right_direction", -1.0);
     declare_parameter<std::string>("odom_frame", "odom");
     declare_parameter<std::string>("base_frame", "base_footprint");
     declare_parameter<bool>("publish_tf", false);
-    declare_parameter<bool>("fault_reset_on_start", true);
+    declare_parameter<bool>("fault_reset_on_start", false);
     declare_parameter<bool>("stop_on_exit", true);
     declare_parameter<bool>("use_pdo", false);
     declare_parameter<double>("control_rate_hz", 50.0);
-    declare_parameter<double>("feedback_rate_hz", 20.0);
+    declare_parameter<double>("feedback_rate_hz", 30.0);
     declare_parameter<double>("fault_check_rate_hz", 2.0);
     declare_parameter<double>("can_poll_rate_hz", 200.0);
+    declare_parameter<double>("status_rate_hz", 1.0);
     declare_parameter<double>("cmd_timeout_sec", 0.5);
     declare_parameter<int>("sdo_timeout_ms", 200);
     declare_parameter<double>("target_velocity_unit_per_rpm", 1.0);
     declare_parameter<double>("actual_velocity_unit_per_rpm", 10.0);
-    declare_parameter<int>("acceleration_rpm_per_sec", 300);
-    declare_parameter<int>("deceleration_rpm_per_sec", 300);
+    declare_parameter<int>("profile_acceleration", 300);
+    declare_parameter<int>("profile_deceleration", 300);
+    declare_parameter<int>("acceleration_rpm_per_sec", 0);
+    declare_parameter<int>("deceleration_rpm_per_sec", 0);
+    declare_parameter<std::string>("protocol_docs_dir", "/home/nvidia/ros2_ws/官方通信协议");
   }
 
   void load_parameters()
   {
     get_parameter("can_interface", can_interface_);
     get_parameter("node_id", node_id_);
-    get_parameter("wheel_diameter", wheel_diameter_);
+    get_parameter("wheel_radius", wheel_radius_);
+    if (!has_parameter_override("wheel_radius")) {
+      double wheel_diameter = 0.0;
+      get_parameter("wheel_diameter", wheel_diameter);
+      if (wheel_diameter > 0.0) {
+        wheel_radius_ = wheel_diameter * 0.5;
+      }
+    }
     get_parameter("wheel_track", wheel_track_);
-    get_parameter("max_linear_velocity", max_linear_velocity_);
-    get_parameter("max_angular_velocity", max_angular_velocity_);
+    get_parameter("max_linear_speed", max_linear_speed_);
+    if (!has_parameter_override("max_linear_speed")) {
+      double max_linear_velocity = 0.0;
+      get_parameter("max_linear_velocity", max_linear_velocity);
+      if (max_linear_velocity > 0.0) {
+        max_linear_speed_ = max_linear_velocity;
+      }
+    }
+    get_parameter("max_angular_speed", max_angular_speed_);
+    if (!has_parameter_override("max_angular_speed")) {
+      double max_angular_velocity = 0.0;
+      get_parameter("max_angular_velocity", max_angular_velocity);
+      if (max_angular_velocity > 0.0) {
+        max_angular_speed_ = max_angular_velocity;
+      }
+    }
     get_parameter("left_direction", left_direction_);
     get_parameter("right_direction", right_direction_);
     get_parameter("odom_frame", odom_frame_);
@@ -586,12 +641,34 @@ private:
     get_parameter("feedback_rate_hz", feedback_rate_hz_);
     get_parameter("fault_check_rate_hz", fault_check_rate_hz_);
     get_parameter("can_poll_rate_hz", can_poll_rate_hz_);
+    get_parameter("status_rate_hz", status_rate_hz_);
     get_parameter("cmd_timeout_sec", cmd_timeout_sec_);
     get_parameter("sdo_timeout_ms", sdo_timeout_ms_);
     get_parameter("target_velocity_unit_per_rpm", target_velocity_unit_per_rpm_);
     get_parameter("actual_velocity_unit_per_rpm", actual_velocity_unit_per_rpm_);
-    get_parameter("acceleration_rpm_per_sec", acceleration_rpm_per_sec_);
-    get_parameter("deceleration_rpm_per_sec", deceleration_rpm_per_sec_);
+    get_parameter("profile_acceleration", profile_acceleration_);
+    if (!has_parameter_override("profile_acceleration")) {
+      int acceleration_rpm_per_sec = 0;
+      get_parameter("acceleration_rpm_per_sec", acceleration_rpm_per_sec);
+      if (acceleration_rpm_per_sec > 0) {
+        profile_acceleration_ = acceleration_rpm_per_sec;
+      }
+    }
+    get_parameter("profile_deceleration", profile_deceleration_);
+    if (!has_parameter_override("profile_deceleration")) {
+      int deceleration_rpm_per_sec = 0;
+      get_parameter("deceleration_rpm_per_sec", deceleration_rpm_per_sec);
+      if (deceleration_rpm_per_sec > 0) {
+        profile_deceleration_ = deceleration_rpm_per_sec;
+      }
+    }
+    get_parameter("protocol_docs_dir", protocol_docs_dir_);
+  }
+
+  bool has_parameter_override(const std::string & name)
+  {
+    const auto overrides = get_node_parameters_interface()->get_parameter_overrides();
+    return overrides.find(name) != overrides.end();
   }
 
   void create_timers()
@@ -604,6 +681,8 @@ private:
       std::bind(&Zlac8015DCanopenController::request_fault, this));
     watchdog_timer_ = create_wall_timer(period_from_hz(control_rate_hz_),
       std::bind(&Zlac8015DCanopenController::watchdog, this));
+    status_timer_ = create_wall_timer(period_from_hz(status_rate_hz_),
+      std::bind(&Zlac8015DCanopenController::publish_status, this));
   }
 
   std::chrono::milliseconds period_from_hz(double hz) const
@@ -626,27 +705,33 @@ private:
   void poll_can()
   {
     if (!online_) {
-      publish_status("offline");
       return;
     }
 
     for (int i = 0; i < 32; ++i) {
-      auto response = client_->poll_once();
-      if (!response) {
+      auto event = client_->poll_once();
+      if (!event) {
         break;
       }
 
-      if (auto rpm = client_->decode_actual_rpm(*response)) {
+      if (event->type == Zlac8015DCanopenClient::EventType::Heartbeat) {
+        heartbeat_state_ = event->heartbeat_state;
+        last_heartbeat_time_ = now();
+        continue;
+      }
+
+      const auto & response = event->sdo;
+      if (auto rpm = client_->decode_actual_rpm(response)) {
         left_actual_rpm_ = rpm->first;
         right_actual_rpm_ = rpm->second;
+        last_feedback_time_ = now();
         publish_odom();
       }
 
-      if (auto fault = client_->decode_fault(*response)) {
-        handle_fault(*fault, response->subindex);
+      if (auto fault = client_->decode_fault(response)) {
+        handle_fault(*fault);
       }
     }
-    publish_status("online");
   }
 
   void request_feedback()
@@ -664,8 +749,6 @@ private:
     }
     client_->request_read(kStatusWord, 0x00);
     client_->request_read(kFaultCode, 0x00);
-    client_->request_read(kFaultCode, 0x01);
-    client_->request_read(kFaultCode, 0x02);
   }
 
   void watchdog()
@@ -701,7 +784,7 @@ private:
     }
   }
 
-  void handle_fault(uint32_t fault, uint8_t subindex)
+  void handle_fault(uint32_t fault)
   {
     if (fault == 0) {
       return;
@@ -710,7 +793,7 @@ private:
     const uint16_t right_fault = static_cast<uint16_t>(fault & 0xFFFF);
     const uint16_t left_fault = static_cast<uint16_t>((fault >> 16) & 0xFFFF);
     std::ostringstream msg;
-    msg << "subindex=" << static_cast<int>(subindex) << " raw=0x" << std::hex << std::uppercase
+    msg << "raw=0x" << std::hex << std::uppercase
         << std::setw(8) << std::setfill('0') << fault
         << " left=0x" << std::setw(4) << left_fault << "(" << fault_text(left_fault) << ")"
         << " right=0x" << std::setw(4) << right_fault << "(" << fault_text(right_fault) << ")";
@@ -720,12 +803,35 @@ private:
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "ZLAC8015D fault: %s", out.data.c_str());
   }
 
-  void publish_status(const std::string & state)
+  void publish_status()
   {
+    const auto stamp = now();
+    std::string state = "offline";
+    double heartbeat_age = -1.0;
+    double feedback_age = -1.0;
+
+    if (online_) {
+      if (last_heartbeat_time_.nanoseconds() == 0) {
+        state = "stale/offline";
+      } else {
+        heartbeat_age = (stamp - last_heartbeat_time_).seconds();
+        if (heartbeat_age > 2.0) {
+          state = "stale/offline";
+        } else if (last_feedback_time_.nanoseconds() == 0) {
+          state = "feedback_timeout";
+        } else {
+          feedback_age = (stamp - last_feedback_time_).seconds();
+          state = feedback_age > 1.0 ? "feedback_timeout" : "online";
+        }
+      }
+    }
+
     std::ostringstream msg;
-    msg << state << " heartbeat_seen=" << (client_ && client_->heartbeat_seen() ? "true" : "false")
+    msg << state << " heartbeat_seen=" << (last_heartbeat_time_.nanoseconds() == 0 ? "false" : "true")
         << " heartbeat_state=0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
-        << static_cast<int>(client_ ? client_->heartbeat_state() : 0)
+        << static_cast<int>(heartbeat_state_)
+        << std::dec << " heartbeat_age_sec=" << heartbeat_age
+        << " feedback_age_sec=" << feedback_age
         << std::dec << " left_rpm=" << left_actual_rpm_ << " right_rpm=" << right_actual_rpm_
         << " timed_out=" << (timed_out_ ? "true" : "false");
     std_msgs::msg::String out;
@@ -735,34 +841,39 @@ private:
 
   std::string can_interface_;
   int node_id_ = 1;
-  double wheel_diameter_ = 0.152;
+  double wheel_radius_ = 0.076;
   double wheel_track_ = 0.25;
-  double max_linear_velocity_ = 0.6;
-  double max_angular_velocity_ = 1.2;
+  double max_linear_speed_ = 0.6;
+  double max_angular_speed_ = 1.2;
   double left_direction_ = 1.0;
-  double right_direction_ = 1.0;
+  double right_direction_ = -1.0;
   std::string odom_frame_ = "odom";
   std::string base_frame_ = "base_footprint";
   bool publish_tf_ = false;
-  bool fault_reset_on_start_ = true;
+  bool fault_reset_on_start_ = false;
   bool stop_on_exit_ = true;
   bool use_pdo_ = false;
   double control_rate_hz_ = 50.0;
-  double feedback_rate_hz_ = 20.0;
+  double feedback_rate_hz_ = 30.0;
   double fault_check_rate_hz_ = 2.0;
   double can_poll_rate_hz_ = 200.0;
+  double status_rate_hz_ = 1.0;
   double cmd_timeout_sec_ = 0.5;
   int sdo_timeout_ms_ = 200;
   double target_velocity_unit_per_rpm_ = 1.0;
   double actual_velocity_unit_per_rpm_ = 10.0;
-  int acceleration_rpm_per_sec_ = 300;
-  int deceleration_rpm_per_sec_ = 300;
+  int profile_acceleration_ = 300;
+  int profile_deceleration_ = 300;
+  std::string protocol_docs_dir_ = "/home/nvidia/ros2_ws/官方通信协议";
 
   bool online_ = false;
   bool timed_out_ = false;
   double left_actual_rpm_ = 0.0;
   double right_actual_rpm_ = 0.0;
+  uint8_t heartbeat_state_ = 0;
   rclcpp::Time last_cmd_time_;
+  rclcpp::Time last_heartbeat_time_;
+  rclcpp::Time last_feedback_time_;
 
   std::unique_ptr<DifferentialDriveKinematics> kinematics_;
   std::unique_ptr<Zlac8015DCanopenClient> client_;
@@ -776,6 +887,7 @@ private:
   rclcpp::TimerBase::SharedPtr feedback_timer_;
   rclcpp::TimerBase::SharedPtr fault_timer_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr status_timer_;
 };
 
 int main(int argc, char ** argv)

@@ -13,7 +13,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_base')
     ekf_config_path = os.path.join(pkg_dir, 'config', 'ekf.yaml')
-    robot_geometry_path = os.path.join(pkg_dir, 'config', 'robot_geometry.yaml')
+    base_kinematics_path = os.path.join(pkg_dir, 'config', 'base_kinematics.yaml')
     zlac_config_path = os.path.join(pkg_dir, 'config', 'zlac8015d.yaml')
     rplidar_pkg_dir = get_package_share_directory('rplidar_ros')
 
@@ -55,7 +55,7 @@ def generate_launch_description():
         output='screen',
         condition=use_zlac,
         parameters=[
-            robot_geometry_path,
+            base_kinematics_path,
             zlac_config_path,
             {'publish_tf': False}
         ]

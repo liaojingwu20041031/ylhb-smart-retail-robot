@@ -27,6 +27,17 @@ ament_target_dependencies(base_controller
   tf2_geometry_msgs
 )
 
+add_executable(zlac8015d_canopen_controller src/zlac8015d_canopen_controller.cpp)
+ament_target_dependencies(zlac8015d_canopen_controller
+  rclcpp
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
 add_executable(imu_driver src/imu_driver.cpp)
 ament_target_dependencies(imu_driver
   rclcpp
@@ -36,6 +47,7 @@ ament_target_dependencies(imu_driver
 
 install(TARGETS
   base_controller
+  zlac8015d_canopen_controller
   imu_driver
   DESTINATION lib/${PROJECT_NAME}
 )

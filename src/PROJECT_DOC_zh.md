@@ -14,7 +14,7 @@
 
 ```text
 1. 底层启动
-   底盘 + IMU + 雷达 + URDF + EKF
+   ZLAC8015D SocketCAN 底盘后端（默认）或 STM32 串口回退 + IMU + 雷达 + URDF + EKF
 
 2. 建图
    RPLidar + 里程计 + TF -> SLAM Toolbox -> 保存 my_map.yaml / my_map.pgm
@@ -65,6 +65,9 @@ cd ~/ros2_ws
 source install/setup.bash
 # 一键启动机器人的所有基础传感器与运动底盘控制节点
 ros2 launch ylhb_base bringup.launch.py
+
+# 无 USB-CAN 线或需要回退旧底盘板时：
+ros2 launch ylhb_base bringup.launch.py base_backend:=stm32
 ```
 
 > **📷 核心指令：启动 ZED 2i 相机节点**
@@ -422,7 +425,8 @@ flowchart TB
   classDef ai fill:#f3e5f5,stroke:#ce93d8,stroke-width:2px,color:#000
 
   subgraph HW["硬件物理层"]
-    STM32["STM32 大脑底板<br/>控制电机与读取编码器"]:::hardware
+    ZLACDRV["ZLAC8015D V4<br/>双轮毂伺服驱动器"]:::hardware
+    STM32["STM32 大脑底板<br/>串口底盘回退"]:::hardware
     IMUHW["IMU 陀螺仪<br/>提供姿态感知"]:::hardware
     LIDARHW["RPLidar 激光雷达<br/>构建2D环境轮廓"]:::hardware
     ZEDHW["ZED 2i 双目相机<br/>采集彩图和深度"]:::hardware
@@ -434,7 +438,8 @@ flowchart TB
   end
 
   subgraph BASE["导航控制层 ylhb_base"]
-    BASECTL["base_controller<br/>执行 /cmd_vel 并发布 /odom"]:::base
+    ZLACCTL["zlac8015d_canopen_controller<br/>默认执行 /cmd_vel 并发布 /odom"]:::base
+    BASECTL["base_controller<br/>STM32 回退后端"]:::base
     IMUNODE["imu_driver<br/>发布 /imu/data"]:::base
     RSP["robot_state_publisher<br/>发布机器人 TF"]:::base
     EKF["ekf_filter_node<br/>融合底盘和 IMU"]:::base
@@ -454,12 +459,14 @@ flowchart TB
     VOUT["voice_output_node<br/>播报队列 + TTS播放"]:::ai
   end
 
+  ZLACDRV <== "SocketCAN / CANopen" ==> ZLACCTL
   STM32 <== "串口通信" ==> BASECTL
   IMUHW -- "I2C/TTL" --> IMUNODE
   LIDARHW -- "串口数据" --> RPLIDAR
   ZEDHW -- "USB 3.0" --> ZED
 
-  BASECTL -- "/odom" --> EKF
+  ZLACCTL -- "/odom" --> EKF
+  BASECTL -. "base_backend:=stm32 时 /odom" .-> EKF
   IMUNODE -- "/imu/data" --> EKF
   EKF -- "TF: odom -> base_footprint" --> NAV2
   RSP -- "/tf_static" --> NAV2
@@ -467,7 +474,8 @@ flowchart TB
   RPLIDAR -- "/scan" --> SLAM
   RPLIDAR -- "/scan" --> NAV2
   SLAM -- "/map" --> NAV2
-  NAV2 -- "/cmd_vel" --> BASECTL
+  NAV2 -- "/cmd_vel" --> ZLACCTL
+  NAV2 -. "base_backend:=stm32" .-> BASECTL
 
   ZED -- "/zed/.../image" --> YOLO
   YOLO -- "/perception/detections" --> LOCALIZER
@@ -497,6 +505,7 @@ flowchart TB
 ├── scripts/
 │   ├── install_jetson_dependencies.sh   # 安装 Jetson 依赖
 │   ├── build_on_jetson.sh               # 一键编译
+│   ├── setup_zlac_can.sh                # 配置 can0/SocketCAN 给 ZLAC8015D
 │   └── run_on_jetson.sh                 # 常用启动包装
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、雷达编排、建图、导航
@@ -521,9 +530,12 @@ src/ylhb_base/
 ├── launch/mapping.launch.py             # 建图启动
 ├── launch/navigation.launch.py          # 导航启动
 ├── config/ekf.yaml                      # EKF 参数
+├── config/robot_geometry.yaml           # 底盘几何、限速、轮向、frame 参数
+├── config/zlac8015d.yaml                # ZLAC8015D CANopen 通信和看门狗参数
 ├── config/slam_toolbox_params.yaml      # 建图参数
 ├── config/nav2_params.yaml              # Nav2 参数
-├── src/base_controller.cpp              # 底盘控制节点
+├── src/zlac8015d_canopen_controller.cpp # 默认 ZLAC SocketCAN 底盘后端
+├── src/base_controller.cpp              # STM32 串口底盘回退后端
 ├── src/imu_driver.cpp                   # IMU 节点
 └── urdf/ylhb.urdf.xacro                 # 机器人模型与传感器安装位姿
 ```
@@ -579,7 +591,8 @@ src/ylhb_llm/
 
 | 节点 | 包 | 订阅 | 发布 | 技术作用 |
 |---|---|---|---|---|
-| `base_controller` | `ylhb_base` | `/cmd_vel` | `/odom` | 把 ROS 速度指令转成底盘串口协议，同时发布轮式里程计 |
+| `zlac8015d_canopen_controller` | `ylhb_base` | `/cmd_vel` | `/odom`, `/zlac8015d/status`, `/zlac8015d/fault` | 默认底盘后端；通过 SocketCAN + CANopen 直接控制 ZLAC8015D 双轮毂伺服 |
+| `base_controller` | `ylhb_base` | `/cmd_vel` | `/odom` | STM32 串口底盘回退后端，使用 `base_backend:=stm32` 启动 |
 | `imu_driver` | `ylhb_base` | 无 | `/imu/data` | 读取 IMU，加速度、角速度、姿态进入 ROS |
 | `rplidar_node` | `rplidar_ros` | 无 | `/scan` | 发布 2D 激光雷达扫描 |
 | `robot_state_publisher` | `robot_state_publisher` | URDF 参数 | `/tf_static`, `/tf` | 根据 URDF 发布传感器相对车体的坐标关系 |
@@ -802,9 +815,24 @@ current_task_id    # 正在播报的任务ID
 
 这一节解释上面表格中每个核心话题“里面是什么、谁用它、比赛调试时怎么看”。
 
-#### 3.6.1 `base_controller`
+#### 3.6.1 底盘后端：`zlac8015d_canopen_controller` / `base_controller`
 
-`base_controller` 是 ROS 和 STM32 底盘之间的桥。
+默认底盘后端是 `zlac8015d_canopen_controller`，Jetson 通过 SocketCAN 直接和 ZLAC8015D V4 CANopen 驱动器通信。旧 `base_controller` 保留为 STM32 串口回退方案：
+
+```bash
+# 默认 ZLAC SocketCAN 后端
+ros2 launch ylhb_base bringup.launch.py base_backend:=zlac
+
+# STM32 串口回退
+ros2 launch ylhb_base bringup.launch.py base_backend:=stm32 base_port:=/dev/ttyS1
+```
+
+ZLAC 参数文件：
+
+```text
+config/robot_geometry.yaml   # 轮径、轮距、最大线/角速度、左右轮方向、frame
+config/zlac8015d.yaml        # CAN 接口、node_id、SDO 超时、看门狗、反馈/故障检查频率
+```
 
 订阅：
 
@@ -833,6 +861,8 @@ teleop_twist_keyboard        # 手动键盘遥控时发布
 
 ```text
 /odom                      # 由底盘编码器积分推算出的基础轮式里程计发布话题
+/zlac8015d/status          # ZLAC 后端状态、心跳、实际左右轮 rpm
+/zlac8015d/fault           # ZLAC 非零故障码；不会循环自动清故障
 ```
 
 消息类型：`nav_msgs/msg/Odometry`
@@ -859,12 +889,15 @@ Nav2 / SLAM          # 间接使用 odom 相关 TF 和位姿估计
 ```bash
 ros2 topic echo /cmd_vel --once
 ros2 topic echo /odom --once
+ros2 topic echo /zlac8015d/status
+ros2 topic echo /zlac8015d/fault
 ```
 
 比赛调试重点：
 
 ```text
-如果 /cmd_vel 有数据但 /odom 不变，优先查底盘串口、STM32、电机反馈。
+如果 /cmd_vel 有数据但 /odom 不变，默认优先查 CAN 接口、ZLAC 使能、故障码和电机反馈。
+使用 base_backend:=stm32 时，再查底盘串口、STM32、电机反馈。
 如果 /odom 跳变，导航和建图都会受影响。
 ```
 
@@ -2588,13 +2621,13 @@ products.yaml 中 priority_for_intents 的本地权重
 
 类型：`geometry_msgs/msg/Twist`  
 发布：Nav2、键盘遥控、上层任务逻辑  
-订阅：`base_controller`  
+订阅：当前底盘后端，默认 `zlac8015d_canopen_controller`；回退时为 `base_controller`  
 作用：控制底盘线速度和角速度。
 
 ### 7.2 `/odom`
 
 类型：`nav_msgs/msg/Odometry`  
-发布：`base_controller`  
+发布：当前底盘后端，默认 `zlac8015d_canopen_controller`；回退时为 `base_controller`  
 订阅：`ekf_filter_node`  
 作用：底盘编码器计算出的轮式里程计。
 
@@ -3061,16 +3094,35 @@ AMCL 初始位姿是否合理
 ```bash
 ros2 topic echo /cmd_vel
 ros2 topic echo /odom --once
+ros2 topic echo /zlac8015d/status
+ros2 topic echo /zlac8015d/fault
+ip -details link show can0
+candump -tz can0
 ls -l /dev/ttyS1 /dev/robot_*
 ```
 
 可能原因：
 
 ```text
-底盘串口错误
-STM32 没上电
-base_controller 没连上串口
+默认 ZLAC 后端：can0 没配置或没 up
+默认 ZLAC 后端：USB-CAN/CAN 线未接、终端电阻或波特率错误
+默认 ZLAC 后端：ZLAC 未上电、未使能或 /zlac8015d/fault 有非零故障
+STM32 回退：底盘串口错误、STM32 没上电、base_controller 没连上串口
 ```
+
+ZLAC 调试顺序：
+
+```bash
+cd ~/ros2_ws
+./scripts/setup_zlac_can.sh can0 500000
+candump -tz can0
+ros2 run ylhb_base zlac8015d_canopen_controller \
+  --ros-args \
+  --params-file src/ylhb_base/config/robot_geometry.yaml \
+  --params-file src/ylhb_base/config/zlac8015d.yaml
+```
+
+无 USB-CAN 线时，只能完成编译、launch 参数解析和静态验证；低速转动、`/odom` 回显、fault/status 检查必须等 CAN 线和 ZLAC 驱动器到位后执行。
 
 ### 10.7 `colcon build` 报 `canonicalize_version` 或 `setuptools` 错误
 

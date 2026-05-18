@@ -1,0 +1,12 @@
+zlac8015d_canopen_controller:
+  ros__parameters:
+    wheel_diameter: 0.152
+    wheel_track: 0.25
+    max_linear_velocity: 0.6
+    max_angular_velocity: 1.2
+    left_direction: 1.0
+    right_direction: 1.0
+    odom_frame: odom
+    base_frame: base_footprint
+    publish_tf: false
+

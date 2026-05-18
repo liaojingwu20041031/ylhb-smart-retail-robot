@@ -114,7 +114,7 @@ case "${MODE}" in
 Usage: $0 <mode> [ros arguments]
 
 Modes:
-  bringup      Start base controller, IMU, RPLidar, robot_state_publisher, EKF
+  bringup      Start chassis backend, IMU, RPLidar, robot_state_publisher, EKF
   mapping      Start slam_toolbox mapping
   navigation   Start Nav2 with default map ${WS_DIR}/src/my_map.yaml
   zed          Start ZED 2i wrapper
@@ -124,7 +124,8 @@ Modes:
   teleop       Start keyboard teleop
 
 Examples:
-  $0 bringup
+  $0 bringup base_backend:=zlac
+  $0 bringup base_backend:=stm32
   $0 zed
   $0 perception model_path:=${WS_DIR}/src/ylhb_perception/models/yolo26.engine backend:=tensorrt imgsz:=960 half:=true
   $0 llm enable_voice:=false enable_tts:=false

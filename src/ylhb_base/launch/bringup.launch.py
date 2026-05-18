@@ -2,7 +2,9 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, Command
+from launch.substitutions import PythonExpression
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -11,6 +13,8 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     pkg_dir = get_package_share_directory('ylhb_base')
     ekf_config_path = os.path.join(pkg_dir, 'config', 'ekf.yaml')
+    robot_geometry_path = os.path.join(pkg_dir, 'config', 'robot_geometry.yaml')
+    zlac_config_path = os.path.join(pkg_dir, 'config', 'zlac8015d.yaml')
     rplidar_pkg_dir = get_package_share_directory('rplidar_ros')
 
     # 引入机器人模型的 urdf.xacro 文件定位
@@ -19,7 +23,11 @@ def generate_launch_description():
     # 声明变量作为启动参数（Launch Arguments），方便在命令行动态修改串口号
     base_port_arg = DeclareLaunchArgument(
         'base_port', default_value='/dev/ttyS1',
-        description='Serial port for the base controller'
+        description='Serial port for the STM32 base controller fallback'
+    )
+    base_backend_arg = DeclareLaunchArgument(
+        'base_backend', default_value='zlac',
+        description='Chassis backend: zlac or stm32'
     )
     imu_port_arg = DeclareLaunchArgument(
         'imu_port', default_value='/dev/robot_imu',
@@ -32,15 +40,34 @@ def generate_launch_description():
 
     # 获取动态的参数值
     base_port = LaunchConfiguration('base_port')
+    base_backend = LaunchConfiguration('base_backend')
     imu_port = LaunchConfiguration('imu_port')
     lidar_port = LaunchConfiguration('lidar_port')
 
-    # 底盘控制节点，关闭其自身发布的 TF，让 EKF 接管
-    base_node = Node(
+    use_zlac = IfCondition(PythonExpression(["'", base_backend, "' == 'zlac'"]))
+    use_stm32 = IfCondition(PythonExpression(["'", base_backend, "' == 'stm32'"]))
+
+    # 默认 ZLAC8015D SocketCAN 底盘后端，关闭自身 TF，让 EKF 接管
+    zlac_base_node = Node(
+        package='ylhb_base',
+        executable='zlac8015d_canopen_controller',
+        name='zlac8015d_canopen_controller',
+        output='screen',
+        condition=use_zlac,
+        parameters=[
+            robot_geometry_path,
+            zlac_config_path,
+            {'publish_tf': False}
+        ]
+    )
+
+    # STM32 串口底盘控制节点作为回退方案
+    stm32_base_node = Node(
         package='ylhb_base',
         executable='base_controller',
         name='base_controller',
         output='screen',
+        condition=use_stm32,
         parameters=[
             {'serial_port': base_port},
             {'publish_tf': False}  # 重要：防止 TF 冲突
@@ -90,11 +117,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        base_backend_arg,
         base_port_arg,
         imu_port_arg,
         lidar_port_arg,
         robot_state_publisher_node,
-        base_node,
+        zlac_base_node,
+        stm32_base_node,
         imu_node,
         lidar_launch,
         ekf_node

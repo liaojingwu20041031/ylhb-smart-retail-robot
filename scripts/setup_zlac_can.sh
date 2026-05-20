@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-iface="${1:-can0}"
+iface="${1:-can1}"
 bitrate="${2:-500000}"
 protocol_dir="/home/nvidia/ros2_ws/官方通信协议"
 

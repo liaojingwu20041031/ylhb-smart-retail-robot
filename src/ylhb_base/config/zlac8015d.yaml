@@ -1,6 +1,6 @@
 zlac8015d_canopen_controller:
   ros__parameters:
-    can_interface: can0
+    can_interface: can1
     node_id: 1
     control_rate_hz: 50.0
     feedback_rate_hz: 30.0

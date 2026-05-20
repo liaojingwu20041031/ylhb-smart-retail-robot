@@ -65,7 +65,7 @@ case "${MODE}" in
       fi
     done
     if [ "${uses_stm32}" != "true" ]; then
-      echo "INFO: ZLAC backend uses SocketCAN; if can0 is not configured, run: ./scripts/setup_zlac_can.sh can0 500000" >&2
+      echo "INFO: ZLAC backend uses PEAK PCAN-USB on SocketCAN can1; if can1 is not configured, run: ./scripts/setup_zlac_can.sh can1 500000" >&2
     fi
     exec ros2 launch ylhb_base bringup.launch.py "$@"
     ;;

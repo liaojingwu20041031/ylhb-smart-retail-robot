@@ -505,8 +505,12 @@ flowchart TB
 ├── scripts/
 │   ├── install_jetson_dependencies.sh   # 安装 Jetson 依赖
 │   ├── build_on_jetson.sh               # 一键编译
-│   ├── setup_zlac_can.sh                # 配置 can0/SocketCAN 给 ZLAC8015D
+│   ├── diagnose_pcan.sh                 # 只读诊断 PEAK PCAN-USB 和内核 CAN 状态
+│   ├── install_peak_pcan_safe.sh        # 安全编译/临时加载 PEAK PCAN-USB SocketCAN 驱动
+│   ├── setup_zlac_can.sh                # 配置 can1/PEAK PCAN-USB SocketCAN 给 ZLAC8015D
 │   └── run_on_jetson.sh                 # 常用启动包装
+├── docs/
+│   └── pcan_peak_setup.md               # PEAK PCAN-USB 安全排查和安装记录
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、雷达编排、建图、导航
 │   ├── ylhb_perception/                 # ZED + YOLO26 + 深度定位
@@ -817,7 +821,7 @@ current_task_id    # 正在播报的任务ID
 
 #### 3.6.1 底盘后端：`zlac8015d_canopen_controller` / `base_controller`
 
-默认底盘后端是 `zlac8015d_canopen_controller`，Jetson 通过 SocketCAN 直接和 ZLAC8015D V4 CANopen 驱动器通信。旧 `base_controller` 保留为 STM32 串口回退方案：
+默认底盘后端是 `zlac8015d_canopen_controller`，Jetson 通过 PEAK PCAN-USB 暴露出的 SocketCAN `can1` 直接和 ZLAC8015D V4 CANopen 驱动器通信。旧 `base_controller` 保留为 STM32 串口回退方案：
 
 ```bash
 # 默认 ZLAC SocketCAN 后端
@@ -833,6 +837,33 @@ ZLAC 参数文件：
 config/base_kinematics.yaml  # 轮半径、轮距、最大线/角速度、左右轮方向、frame
 config/zlac8015d.yaml        # CAN 接口、node_id、SDO 超时、看门狗、反馈/故障检查频率
 ```
+
+当前现场默认 CAN 接口：
+
+```text
+can0  # Jetson 板载 mttcan，不接 ZLAC8015D 底盘链路
+can1  # PEAK PCAN-USB，已验证为 ZLAC8015D 底盘链路
+```
+
+PCAN-USB 验证结论：
+
+```text
+lsusb 能看到 0c72:000c PEAK System PCAN-USB
+pcan 模块为 PEAK Linux driver 8.15.2，netdev/SocketCAN 模式
+ip -details link show can1 显示 can1 UP、ERROR-ACTIVE、bitrate 500000
+candump -tz can1 能收到 ZLAC8015D 上电心跳：701#00
+```
+
+底盘上线前必须先保证 `can1` 是 500k 并处于 UP：
+
+```bash
+cd ~/ros2_ws
+./scripts/setup_zlac_can.sh can1 500000
+ip -details link show can1
+candump -tz can1
+```
+
+`candump` 看到 `701#00` 后，再启动默认 ZLAC 后端。否则先排查 PEAK 驱动、USB-CAN 线、CANH/CANL、终端电阻、ZLAC 上电和波特率。
 
 订阅：
 
@@ -3096,15 +3127,15 @@ ros2 topic echo /cmd_vel
 ros2 topic echo /odom --once
 ros2 topic echo /zlac8015d/status
 ros2 topic echo /zlac8015d/fault
-ip -details link show can0
-candump -tz can0
+ip -details link show can1
+candump -tz can1
 ls -l /dev/ttyS1 /dev/robot_*
 ```
 
 可能原因：
 
 ```text
-默认 ZLAC 后端：can0 没配置或没 up
+默认 ZLAC 后端：can1 没配置或没 up
 默认 ZLAC 后端：USB-CAN/CAN 线未接、终端电阻或波特率错误
 默认 ZLAC 后端：ZLAC 未上电、未使能或 /zlac8015d/fault 有非零故障
 STM32 回退：底盘串口错误、STM32 没上电、base_controller 没连上串口
@@ -3114,15 +3145,22 @@ ZLAC 调试顺序：
 
 ```bash
 cd ~/ros2_ws
-./scripts/setup_zlac_can.sh can0 500000
-candump -tz can0
+./scripts/setup_zlac_can.sh can1 500000
+ip -details link show can1
+candump -tz can1
 ros2 run ylhb_base zlac8015d_canopen_controller \
   --ros-args \
   --params-file src/ylhb_base/config/base_kinematics.yaml \
   --params-file src/ylhb_base/config/zlac8015d.yaml
 ```
 
-无 USB-CAN 线时，只能完成编译、launch 参数解析和静态验证；低速转动、`/odom` 回显、fault/status 检查必须等 CAN 线和 ZLAC 驱动器到位后执行。
+`candump -tz can1` 的关键验收报文：
+
+```text
+(000.000000)  can1  701   [1]  00
+```
+
+这表示 ZLAC8015D node_id=1 已通过 PCAN-USB 在 CANopen 上电后发出 boot-up 心跳，ROS2 默认底盘后端才具备直接通信条件。无 USB-CAN 线或未收到 `701#00` 时，只能完成编译、launch 参数解析和静态验证；低速转动、`/odom` 回显、fault/status 检查必须等 CAN 线和 ZLAC 驱动器到位后执行。
 
 ### 10.7 `colcon build` 报 `canonicalize_version` 或 `setuptools` 错误
 

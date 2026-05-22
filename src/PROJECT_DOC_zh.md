@@ -62,12 +62,56 @@
 # 终端 1：启动底盘、IMU、雷达、URDF、EKF
 # 进入工作目录并加载环境变量
 cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-# 一键启动机器人的所有基础传感器与运动底盘控制节点
+# 一键启动底盘、雷达、URDF、EKF。当前 Jetson 内核未启用 CH340 时，IMU 默认不强启。
 ros2 launch ylhb_base bringup.launch.py
+
+# 若已经补好 CH340/ch341 驱动并出现 IMU 串口，再显式启用 IMU：
+ros2 launch ylhb_base bringup.launch.py enable_imu:=true imu_port:=/dev/ttyUSB1
 
 # 无 USB-CAN 线或需要回退旧底盘板时：
 ros2 launch ylhb_base bringup.launch.py base_backend:=stm32
+```
+
+### 底层串口约定与验收
+
+Jetson Orin Nano Super 当前硬件连接约定：
+
+```text
+10c4:ea60 Silicon Labs CP210x  -> RPLidar A2M8
+1a86:7523 QinHeng CH340        -> IMU 的 USB 转 TTL 模块
+0c72:000c PEAK PCAN-USB        -> ZLAC8015D CANopen 底盘
+```
+
+`bringup.launch.py` 中雷达默认使用 CP2102 的稳定 by-id 端口：
+
+```text
+/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+```
+
+RPLidar A2M8 固定按 `115200` 启动，launch 中将 `lidar_baudrate` 强制作为 int 传给 `rplidar_node`，避免参数类型错误导致节点回退到源码默认的 `1000000` 波特率。正常启动时必须看到类似日志：
+
+```text
+RPLidar serial config: port=... baudrate=115200 frame_id=laser_link
+RPLidar S/N: ...
+RPLidar health status : OK.
+current scan mode: Sensitivity ... scan frequency:10.0 Hz
+```
+
+雷达验收：
+
+```bash
+ros2 topic echo /scan --once
+```
+
+如果雷达再次出现 `SL_RESULT_OPERATION_TIMEOUT`，先看日志中的 `RPLidar serial config`，确认端口是 CP210x by-id 且 `baudrate=115200`；不要再把 CH340 当成雷达端口排查。
+
+IMU 当前注意事项：CH340 能出现在 `lsusb` 里只表示 USB 枚举成功，不等于 Linux 已经创建 tty 串口。当前 Jetson 内核配置为 `# CONFIG_USB_SERIAL_CH341 is not set` 时，`1a86:7523` 不会生成 `/dev/ttyUSB*`，IMU 节点无法打开串口。解决方式是给当前 Jetson 内核补 `ch341` 驱动，或临时改用 CP210x/FTDI USB 转 TTL 模块。驱动补好后再运行：
+
+```bash
+ls -l /dev/serial/by-id/ /dev/ttyUSB*
+ros2 launch ylhb_base bringup.launch.py enable_imu:=true imu_port:=/dev/ttyUSB1
 ```
 
 > **📷 核心指令：启动 ZED 2i 相机节点**

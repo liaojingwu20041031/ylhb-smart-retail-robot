@@ -105,6 +105,12 @@ class RPlidarNode : public rclcpp::Node
             this->get_parameter_or<float>("scan_frequency", scan_frequency, 20.0);
         else
             this->get_parameter_or<float>("scan_frequency", scan_frequency, 10.0);
+
+        if (channel_type == "serial") {
+            RCLCPP_INFO(this->get_logger(),
+                        "RPLidar serial config: port=%s baudrate=%d frame_id=%s",
+                        serial_port.c_str(), serial_baudrate, frame_id.c_str());
+        }
     }
 
     bool getRPLIDARDeviceInfo(ILidarDriver * drv)

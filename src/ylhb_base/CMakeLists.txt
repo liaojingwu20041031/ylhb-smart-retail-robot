@@ -62,6 +62,7 @@ install(DIRECTORY
   launch
   config
   urdf
+  behavior_trees
   DESTINATION share/${PROJECT_NAME}
 )
 

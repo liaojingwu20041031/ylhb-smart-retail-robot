@@ -5,9 +5,9 @@ zlac8015d_canopen_controller:
     # 左右驱动轮接地点中心之间的距离，单位：米。影响原地旋转角速度和里程计转角。
     wheel_track: 0.4008
     # 底盘最大线速度，单位：米/秒。cmd_vel 超过该值会被限幅，调大前确认电机和场地安全。
-    max_linear_speed: 0.6
+    max_linear_speed: 0.35
     # 底盘最大角速度，单位：弧度/秒。cmd_vel 超过该值会被限幅。
-    max_angular_speed: 1.2
+    max_angular_speed: 0.55
     # 左轮方向系数。若前进指令下左轮实际反转，可在 1.0 和 -1.0 之间切换。
     left_direction: 1.0
     # 右轮方向系数。若前进指令下右轮实际反转，可在 1.0 和 -1.0 之间切换。

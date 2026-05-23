@@ -1,11 +1,14 @@
 amcl:
   ros__parameters:
+    # 是否使用仿真时间；实车运行保持 False。
     use_sim_time: False
+    # AMCL 运动模型噪声参数，数值越大越不信任里程计运动预测。
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
+    # TF 坐标系：map -> odom -> base_footprint。
     base_frame_id: "base_footprint"
     global_frame_id: "map"
     odom_frame_id: "odom"
@@ -14,88 +17,137 @@ amcl:
     initial_pose_x: 0.0
     initial_pose_y: 0.0
     initial_pose_yaw: 0.0
+    # 激光束和粒子数量；粒子越多定位越稳但 CPU 占用越高。
     max_beams: 60
     max_particles: 2000
     min_particles: 500
+    # 粒子滤波收敛阈值，通常不需要频繁调整。
     pf_err: 0.05
     pf_z: 0.99
+    # 差速底盘运动模型。
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
-    transform_tolerance: 1.0
+    # AMCL 发布 map->odom 时向未来预留时间，避免 Nav2 目标时间戳略超前导致规划直接失败。
+    transform_tolerance: 2.0
+    # AMCL 使用的雷达话题。
     scan_topic: scan
-    update_min_d: 0.25
-    update_min_a: 0.2
+    # AMCL 更新阈值：移动 0.05m 或转动 0.05rad 后更新定位。
+    update_min_d: 0.05
+    update_min_a: 0.05
 
 amcl_map_client:
   ros__parameters:
+    # 地图客户端同样使用实车时间。
     use_sim_time: False
 
 bt_navigator:
   ros__parameters:
+    # 行为树导航器，负责把目标点任务串成规划和跟踪动作。
     use_sim_time: False
+    # 导航使用的全局坐标系、底盘坐标系和里程计话题。
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
-    default_bt_xml_filename: "navigate_w_replanning_and_recovery.xml"
-    enable_groot_monitoring: True
+    # 行为树内部 TF 查询容忍时间；实车/Foxglove 目标时间戳会有几十毫秒抖动。
+    transform_tolerance: 1.0
+    # 默认行为树禁用恢复动作，失败时不再原地急转或后退。
+    default_bt_xml_filename: "/home/nvidia/ros2_ws/src/ylhb_base/config/nav2_no_recovery.xml"
+    default_nav_to_pose_bt_xml: "/home/nvidia/ros2_ws/src/ylhb_base/config/nav2_no_recovery.xml"
+    # 多点导航仍保留原文件，但当前只启用 navigate_to_pose。
+    default_nav_through_poses_bt_xml: "/home/nvidia/ros2_ws/install/ylhb_base/share/ylhb_base/behavior_trees/navigate_through_poses_wait_recovery.xml"
+    # 关闭 Groot 监控，减少无用端口和运行噪声。
+    enable_groot_monitoring: False
     navigators: ["navigate_to_pose"]
 
 controller_server:
   ros__parameters:
+    # 控制器服务根据全局路径输出 /cmd_vel。
     use_sim_time: False
+    # 控制频率，20Hz 对小车底盘比较平滑。
     controller_frequency: 20.0
+    # 短暂控制失败的容忍时间，避免瞬时 TF/代价地图抖动直接中断。
     failure_tolerance: 0.3
     controller_plugins: ["FollowPath"]
+    current_goal_checker: "goal_checker"
+    goal_checker_plugins: ["goal_checker"]
 
     FollowPath:
+      # DWB 局部规划器：根据路径、障碍物和目标方向采样速度。
       plugin: "dwb_core::DWBLocalPlanner"
-      # Default DWB configs
+      # 打开轨迹调试，便于看 DWB 为什么选择某条速度轨迹。
       debug_trajectory_details: True
+      # 差速底盘不使用横向速度 y。
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.15
+      # Nav2 输出线速度上限，保持低速导航。
+      max_vel_x: 0.18
       max_vel_y: 0.0
+      # Nav2 输出角速度上限，抑制失败时大角速度原地旋转。
       max_vel_theta: 0.45
       min_speed_xy: 0.0
-      max_speed_xy: 0.15
+      # 平面合速度上限，与 max_vel_x 保持一致。
+      max_speed_xy: 0.18
       min_speed_theta: 0.0
-      acc_lim_x: 0.4
+      # 加速度/减速度限制，避免 /cmd_vel 突变。
+      acc_lim_x: 0.35
       acc_lim_y: 0.0
-      acc_lim_theta: 0.8
-      decel_lim_x: -0.4
+      acc_lim_theta: 0.70
+      decel_lim_x: -0.35
       decel_lim_y: 0.0
-      decel_lim_theta: -0.8
+      decel_lim_theta: -0.70
+      # 速度采样数量；越高越细，但计算更重。
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
+      # DWB 前向仿真时间和采样分辨率。
       sim_time: 1.7
       linear_granularity: 0.05
       angular_granularity: 0.025
-      transform_tolerance: 0.5
+      # 控制器查询 TF 的容忍时间。
+      transform_tolerance: 1.0
+      # 到目标点 0.25m 内认为位置到达。
       xy_goal_tolerance: 0.25
+      # 低于该平移速度认为底盘已停止。
       trans_stopped_velocity: 0.03
+      # 轨迹评分器：避障、贴近路径、朝向目标、抑制振荡等。
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
 
     progress_checker:
+      # 进度检查器：15 秒内至少移动 0.15m，否则认为卡住。
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.15
       movement_time_allowance: 15.0
 
+    goal_checker:
+      # 目标检查器：明确使用 SimpleGoalChecker，消除默认 goal checker 警告。
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+      stateful: True
+
 local_costmap:
   local_costmap:
     ros__parameters:
+      # 局部代价地图跟随机器人滚动，用于近距离避障。
       update_frequency: 5.0
       publish_frequency: 2.0
+      # 局部地图使用 odom 坐标系，不依赖全局定位跳变。
       global_frame: odom
       robot_base_frame: base_footprint
       use_sim_time: False
-      transform_tolerance: 0.5
+      transform_tolerance: 1.0
+      # 滚动窗口尺寸，单位米。
       rolling_window: true
       width: 3
       height: 3
       resolution: 0.05
+      # 机器人矩形足迹，按 base_footprint 坐标填写。
       footprint: "[ [0.321, 0.235], [0.321, -0.235], [-0.144, -0.235], [-0.144, 0.235] ]"
+      # 真实车体外额外安全边距；2cm 用于表达 footprint 外的小余量。
+      footprint_padding: 0.02
+      # 局部地图只使用障碍层和膨胀层。
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
+        # 激光障碍层：根据 /scan 标记和清除障碍。
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         observation_sources: scan
@@ -110,27 +162,35 @@ local_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
       inflation_layer:
+        # 障碍膨胀层半径，给局部规划器看的障碍扩张范围。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.30
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.26
 
 global_costmap:
   global_costmap:
     ros__parameters:
+      # 全局代价地图基于 map 坐标系，用于全局规划。
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: False
-      transform_tolerance: 0.5
+      transform_tolerance: 1.0
       resolution: 0.05
+      # 未知区域保留为未知，规划器是否可穿越由 allow_unknown 控制。
       track_unknown_space: true
       footprint: "[ [0.321, 0.235], [0.321, -0.235], [-0.144, -0.235], [-0.144, 0.235] ]"
+      # 真实车体外额外安全边距；2cm 用于表达 footprint 外的小余量。
+      footprint_padding: 0.02
+      # 全局地图包含静态地图、激光障碍和膨胀层。
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
+        # 从 map_server 订阅静态地图。
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
       obstacle_layer:
+        # 全局地图也接收激光障碍，避免地图外或动态障碍被忽略。
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         observation_sources: scan
@@ -145,44 +205,84 @@ global_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
       inflation_layer:
+        # 障碍膨胀层半径，给全局规划器看的障碍扩张范围。
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.30
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.26
 
 map_server:
   ros__parameters:
+    # 地图服务；实际地图路径由 navigation.launch.py 的 map 参数传入覆盖。
     use_sim_time: False
     yaml_filename: "my_map.yaml"
 
 planner_server:
   ros__parameters:
+    # 全局规划器，负责从当前位置到目标点生成路径。
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
+      # Navfn 规划器，适合二维栅格地图。
       plugin: "nav2_navfn_planner/NavfnPlanner"
+      # 目标附近 0.5m 内可接受，降低狭窄环境中规划失败概率。
       tolerance: 0.5
+      # false 使用 Dijkstra；true 使用 A*。
       use_astar: false
+      # 允许规划穿过未知区域，适合地图边界或轻微缺图场景。
       allow_unknown: true
 
-recoveries_server:
+behavior_server:
   ros__parameters:
+    # Humble 使用 behavior_server；这里只保留 wait，禁用 spin/backup 恢复动作。
     use_sim_time: False
+    cycle_frequency: 10.0
+    behavior_plugins: ["wait"]
+    # 行为服务需要的局部/全局 costmap 和足迹话题。
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
-    cycle_frequency: 10.0
-    recovery_plugins: ["spin", "backup", "wait"]
-    spin:
-      plugin: "nav2_recoveries/Spin"
-    backup:
-      plugin: "nav2_recoveries/BackUp"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 1.0
+    # 行为仿真前视时间；当前只用于 wait 插件的通用参数兼容。
+    simulate_ahead_time: 2.0
     wait:
-      plugin: "nav2_recoveries/Wait"
+      plugin: "nav2_behaviors/Wait"
 
 waypoint_follower:
   ros__parameters:
+    # 航点跟随器保留默认等待插件；当前导航入口主要使用单目标导航。
     loop_rate: 20
     stop_on_failure: false
     waypoint_task_executor_plugin: "wait_at_waypoint"
     wait_at_waypoint:
       plugin: "nav2_waypoint_follower::WaitAtWaypoint"
       waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    # 速度平滑器夹在 Nav2 控制输出和底盘之间，限制速度突变。
+    use_sim_time: False
+    # 平滑输出频率。
+    smoothing_frequency: 20.0
+    # 不按比例缩放三轴速度，直接按各轴限幅。
+    scale_velocities: False
+    # 开环平滑，不等待里程计反馈闭环修正。
+    feedback: "OPEN_LOOP"
+    # 平滑后的最大速度：[x, y, theta]，差速底盘 y 保持 0。
+    max_velocity: [0.18, 0.0, 0.45]
+    # 允许很小倒车速度，角速度正负对称限幅。
+    min_velocity: [-0.05, 0.0, -0.45]
+    # 平滑器加速度/减速度限制，与 DWB 限制保持一致。
+    max_accel: [0.35, 0.0, 0.70]
+    max_decel: [-0.35, 0.0, -0.70]
+    # 里程计话题和反馈时间窗口，保留给平滑器参数完整性。
+    odom_topic: "odom"
+    odom_duration: 0.1
+    # 超过该时间未收到速度命令则输出停止。
+    velocity_timeout: 1.0
+    # 死区速度，0 表示不额外吞掉小速度。
+    deadband_velocity: [0.0, 0.0, 0.0]

@@ -4,25 +4,30 @@
   <!-- 1. 定义主要参考坐标系 (通常位于机器人底盘中心在地面的投影位置) -->
   <link name="base_footprint"/>
 
-  <!-- 2. 小车主体框架：建立 base_link（设位于轮间距中心，尺寸 30x30 cm） -->
+  <!-- 2. 小车主体框架：建立 base_link（实测长方体包络） -->
   <link name="base_link">
     <visual>
+      <origin xyz="0.0885 0 0.07175" rpy="0 0 0"/>
       <geometry>
-        <!-- 小车大致是个长宽 0.3x0.3m 的板，假设厚度为2cm -->
-        <box size="0.3 0.3 0.02"/>
+        <box size="0.465 0.470 0.3165"/>
       </geometry>
       <material name="gray">
         <color rgba="0.7 0.7 0.7 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.0885 0 0.07175" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.465 0.470 0.3165"/>
+      </geometry>
+    </collision>
   </link>
 
-  <!-- 将 base_link 与 base_footprint 链接。假设当前车轮半径为 3cm(0.03m) 
-       如果这里设为0，则代表轮距中心就在地板贴地上。 -->
+  <!-- 将 base_link 与 base_footprint 链接，保持底盘坐标系在轮间中心。 -->
   <joint name="footprint_to_base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    <origin xyz="0 0 0.0865" rpy="0 0 0"/>
   </joint>
 
   <!-- 3. 定义 IMU 的位置与物理属性 -->

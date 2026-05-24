@@ -18,7 +18,11 @@ def generate_launch_description():
     if not os.path.exists(preferred_map):
         default_map = fallback_map
         map_fallback_warning = LogInfo(
-            msg=f'WARN: default map {preferred_map} does not exist; falling back to {fallback_map}'
+            msg=(
+                f'WARN: recommended competition map {preferred_map} does not exist; '
+                f'falling back to compatibility map {fallback_map}. '
+                'This is not the recommended competition map path.'
+            )
         )
 
     map_yaml_file = LaunchConfiguration('map')
@@ -40,6 +44,16 @@ def generate_launch_description():
         default_value=os.path.join(pkg_dir, 'config', 'nav2_params.yaml'),
         description='Full path to the ROS2 parameters file to use for all launched nodes')
 
+    bringup_reminder = LogInfo(
+        msg=(
+            'INFO: navigation.launch.py starts Nav2 only. Start '
+            'ylhb_base bringup.launch.py first so /odom, /scan, and TF are available. '
+            'AMCL initializes from the map origin by default for competition starts. '
+            'If the robot is not near the mapping start point, publish /initialpose '
+            'from RViz/Foxglove before sending navigation goals.'
+        )
+    )
+
     nav2_bringup_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(nav2_bringup_dir, 'launch', 'bringup_launch.py')
@@ -54,6 +68,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     if map_fallback_warning is not None:
         ld.add_action(map_fallback_warning)
+    ld.add_action(bringup_reminder)
     ld.add_action(declare_map_yaml_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)

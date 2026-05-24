@@ -15,6 +15,7 @@ find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(behaviortree_cpp_v3 REQUIRED)
 
 add_executable(base_controller src/base_controller.cpp)
 ament_target_dependencies(base_controller
@@ -45,11 +46,29 @@ ament_target_dependencies(imu_driver
   tf2
 )
 
+add_library(ylhb_normalize_goal_bt_node SHARED src/normalize_goal_bt_node.cpp)
+ament_target_dependencies(ylhb_normalize_goal_bt_node
+  rclcpp
+  geometry_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+target_link_libraries(ylhb_normalize_goal_bt_node BT::behaviortree_cpp_v3)
+target_compile_definitions(ylhb_normalize_goal_bt_node PRIVATE BT_PLUGIN_EXPORT)
+
 install(TARGETS
   base_controller
   zlac8015d_canopen_controller
   imu_driver
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS
+  ylhb_normalize_goal_bt_node
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(PROGRAMS

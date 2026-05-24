@@ -13,9 +13,9 @@ ekf_filter_node:
     sensor_timeout: 0.1
     # 二维模式。差速小车在地面运动应保持 true，忽略 z/roll/pitch 等 3D 状态。
     two_d_mode: true
-    # TF 时间戳偏移，单位：秒。一般保持 0.0。
+    # TF 时间戳偏移，单位：秒。保持 0，避免未来 TF 让 AMCL 丢弃较早时间戳的 /scan。
     transform_time_offset: 0.0
-    # 等待 TF 的超时时间，单位：秒。一般保持 0.0，避免阻塞滤波。
+    # 等待 TF 的超时时间，单位：秒。保持 0，避免滤波链路阻塞。
     transform_timeout: 0.0
     # 是否打印诊断信息。调试传感器融合时可保持 true。
     print_diagnostics: true

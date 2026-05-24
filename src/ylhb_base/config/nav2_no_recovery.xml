@@ -2,9 +2,10 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateWaitRetry">
       <PipelineSequence name="NavigateWithRetry">
+        <NormalizeGoal input_goal="{goal}" output_goal="{map_goal}" global_frame="map"/>
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="2" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ComputePathToPose goal="{map_goal}" path="{path}" planner_id="GridBased"/>
             <ClearEntireCostmap name="ClearGlobalCostmap" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

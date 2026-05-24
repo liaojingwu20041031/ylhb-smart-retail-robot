@@ -71,7 +71,7 @@
 | Jetson 本机部署 | ✅ 可用 | 依赖安装、构建、运行入口集中在 `scripts/` |
 | ZLAC8015D 底盘 | ✅ 默认 | 默认使用 PEAK PCAN-USB 暴露的 SocketCAN `can1`，速率 500000 |
 | STM32 底盘 | ✅ 回退 | `base_backend:=stm32` 可切换到旧串口链路 |
-| SLAM / Nav2 | ✅ 可用 | 默认地图为 `src/my_map.yaml`，当前地图尺寸 `195 x 333`；UI 和移动端保存地图已统一 10 秒等待超时 |
+| SLAM / Nav2 | ✅ 可用 | 比赛默认地图为 `maps/my_map.yaml`，`src/my_map.yaml` 仅作兼容回退；UI 和移动端保存地图已统一 10 秒等待超时 |
 | ZED + YOLO26 | ✅ 可用 | 默认加载 Jetson 本机 TensorRT engine |
 | 多模态任务层 | ✅ 可用 | 支持任务书图片、文字指令、商品推荐和购物车状态 |
 | 连续语音 / TTS | ✅ 可用 | 默认面向 eMeet Luna，唤醒后进入连续对话 |
@@ -155,6 +155,9 @@ flowchart TB
 │   └── run_on_jetson.sh                 # 现场运行入口
 ├── CAD/
 │   └── Retail-Cart-3D-Model/            # 机械同学提供的小车结构 CAD 与 STL 文件
+├── maps/
+│   ├── my_map.yaml                      # 比赛推荐导航地图
+│   └── my_map.pgm
 ├── src/
 │   ├── ylhb_base/                       # 底盘、IMU、URDF、EKF、SLAM、Nav2
 │   ├── ylhb_perception/                 # ZED、YOLO/TensorRT、深度定位
@@ -265,7 +268,7 @@ PYTHONNOUSERSITE=1 colcon test \
 ```text
 bringup       启动底盘、IMU、雷达、URDF、EKF
 mapping       启动 SLAM Toolbox 建图
-navigation    启动 Nav2，默认地图为 ~/ros2_ws/src/my_map.yaml
+navigation    启动 Nav2，默认地图为 ~/ros2_ws/maps/my_map.yaml，缺失时回退到 ~/ros2_ws/src/my_map.yaml
 zed           启动 ZED 2i wrapper
 perception    启动 TensorRT YOLO 感知节点
 llm           启动 AI 任务层、语音节点和可选 UI
@@ -513,13 +516,16 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard \
 ./scripts/run_on_jetson.sh navigation
 ```
 
+比赛默认把机器人放在建图起点附近，AMCL 启动时会先使用地图原点 `(0, 0, 0)` 发布定位。若现场启动位置偏离建图起点，请先在 RViz/Foxglove 发布 `/initialpose` 覆盖默认位姿，再发送导航目标。
+
 默认导航地图：
 
 ```text
-~/ros2_ws/src/my_map.yaml
+~/ros2_ws/maps/my_map.yaml
+~/ros2_ws/maps/my_map.pgm
 ```
 
-当前仓库随附的默认地图来自实机 SLAM 保存，地图图像为 `195 x 333`，分辨率 `0.05 m/pix`。
+推荐比赛导航地图来自实机 SLAM 保存，地图图像为 `195 x 333`，分辨率 `0.05 m/pix`。`~/ros2_ws/src/my_map.yaml` 仅作为兼容回退地图。
 
 UI 的“保存地图”默认写入：
 
@@ -535,7 +541,7 @@ ros2 run nav2_map_server map_saver_cli -f <target> --ros-args -p save_map_timeou
 
 这个等待时间用于覆盖 SLAM Toolbox 发布 `/map` 的实际节奏，避免 Nav2 默认 2 秒订阅等待偶发超时。
 
-导航默认仍读取 `~/ros2_ws/src/my_map.yaml`。要使用新保存的地图，需要复制成默认地图或启动导航时覆盖 `map:=...`。
+导航默认优先读取 `~/ros2_ws/maps/my_map.yaml`。要使用新保存的地图，需要复制成推荐默认地图、保持为回退地图，或启动导航时覆盖 `map:=...`。
 
 ---
 

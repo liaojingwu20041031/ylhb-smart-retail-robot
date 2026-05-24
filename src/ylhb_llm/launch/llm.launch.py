@@ -16,7 +16,6 @@ def generate_launch_description():
     default_products = os.path.join(pkg_dir, 'config', 'products.yaml')
     default_task_image_dir = os.path.join(pkg_dir, 'test_images')
     default_map_output_dir = os.path.join(workspace_dir, 'src', 'maps')
-    default_navigation_map = os.path.join(workspace_dir, 'src', 'my_map.yaml')
     default_perception_model = os.path.join(
         workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
 
@@ -46,7 +45,6 @@ def generate_launch_description():
     force_local_display = LaunchConfiguration('force_local_display')
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     map_output_dir = LaunchConfiguration('map_output_dir')
-    default_navigation_map_arg = LaunchConfiguration('default_navigation_map')
     perception_model_path = LaunchConfiguration('perception_model_path')
 
     return LaunchDescription([
@@ -72,7 +70,6 @@ def generate_launch_description():
         DeclareLaunchArgument('task_image_dir', default_value=default_task_image_dir),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
-        DeclareLaunchArgument('default_navigation_map', default_value=default_navigation_map),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
         DeclareLaunchArgument('initial_system_mode', default_value='ready'),
         DeclareLaunchArgument('fullscreen', default_value='true'),
@@ -177,7 +174,6 @@ def generate_launch_description():
                 {
                     'workspace_dir': workspace_dir_arg,
                     'map_output_dir': map_output_dir,
-                    'default_navigation_map': default_navigation_map_arg,
                     'perception_model_path': perception_model_path,
                     'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool),
                     'enable_voice': ParameterValue(enable_voice, value_type=bool),

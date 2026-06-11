@@ -45,3 +45,6 @@ core.*
 *.pfx
 id_rsa
 id_ed25519
+
+# SolidWorks temporary lock files
+~$*

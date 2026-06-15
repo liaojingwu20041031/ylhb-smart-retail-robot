@@ -1,6 +1,7 @@
 import json
+import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -9,29 +10,12 @@ from std_msgs.msg import String
 
 from ylhb_interfaces.msg import SayText, TaskStatus
 
-
-SAFETY_WORDS = ('急停', '停止', '停下', '别动', '刹车')
-VOICE_CLOSE_WORDS = (
-    '关闭语音模式',
-    '退出语音模式',
-    '停止语音模式',
-    '关闭语音',
-    '退出语音',
-    '关掉语音',
-    '结束语音',
-    '关机',
-)
-CANCEL_WORDS = ('取消任务', '取消当前任务', '不要了')
-CHECKOUT_WORDS = ('多少钱', '结算', '总价', '一共', '付款')
-MOTION_WORDS = ('前进', '后退', '左转', '右转')
-SYSTEM_FEEDBACK_WORDS = (
-    '怎么不说话',
-    '你怎么不说话',
-    '没声音',
-    '听不到',
-    '没有声音',
-    '你没说话',
-    '语音坏了',
+from .product_catalog import ProductCatalog
+from .voice_stability import (
+    VoiceIntent,
+    VoiceRoutingPolicy,
+    classify_voice_intent,
+    normalize_voice_text,
 )
 
 
@@ -49,17 +33,52 @@ class VoiceCommandRouterNode(Node):
         super().__init__('voice_command_router_node')
         self.declare_parameter('voice_command_event_topic', '/retail_ai/voice_command_event')
         self.declare_parameter('text_command_topic', '/retail_ai/text_command')
+        self.declare_parameter('system_command_topic', '/retail_ai/system_command')
         self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
         self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
         self.declare_parameter('task_status_topic', '/retail_ai/task_status')
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
+        self.declare_parameter(
+            'products_file',
+            os.path.join(
+                os.environ.get('WS_DIR', os.path.expanduser('~/ros2_ws')),
+                'src',
+                'ylhb_llm',
+                'config',
+                'products.yaml',
+            ),
+        )
+        self.declare_parameter(
+            'motion_aliases',
+            [],
+        )
+        self.declare_parameter('system_commands', [])
+        self.declare_parameter('voice_close_words', [])
+        self.declare_parameter('safety_words', [])
+        self.declare_parameter('cancel_words', [])
+        self.declare_parameter('checkout_words', [])
+        self.declare_parameter('system_feedback_words', [])
+        self.declare_parameter('general_qa_words', [])
+        self.declare_parameter('sales_need_words', [])
+        self.declare_parameter('background_words', [])
+        self.declare_parameter('sales_followup_words', [])
+        self.declare_parameter('incomplete_motion_words', [])
+        self.declare_parameter('ignore_unknown_voice', True)
 
         self.system_mode = 'ready'
         self.sales_status: Dict[str, Any] = {}
         self.recent_utterances = set()
         self.recent_utterance_order = []
+        self.motion_aliases = self.parse_motion_aliases(
+            [str(v) for v in self.get_parameter('motion_aliases').value]
+        )
+        self.routing_policy = self.load_routing_policy()
+        self.ignore_unknown_voice = bool(
+            self.get_parameter('ignore_unknown_voice').value)
 
         self.text_pub = self.create_publisher(String, self.get_parameter('text_command_topic').value, 10)
+        self.system_command_pub = self.create_publisher(
+            String, self.get_parameter('system_command_topic').value, 10)
         self.say_pub = self.create_publisher(SayText, self.get_parameter('say_text_topic').value, 10)
         self.create_subscription(
             String,
@@ -93,7 +112,7 @@ class VoiceCommandRouterNode(Node):
         except json.JSONDecodeError as exc:
             self.get_logger().warn(f'Invalid voice command event JSON: {exc}')
             return
-        text = self.normalize_text(str(event.get('text') or ''))
+        text = normalize_voice_text(str(event.get('text') or ''))
         if not text:
             return
         utterance_id = str(event.get('utterance_id') or '')
@@ -104,33 +123,76 @@ class VoiceCommandRouterNode(Node):
             return
         self.remember_utterance(dedupe_key)
 
-        if self.is_close_voice_session(text):
-            self.publish_text_command(text, event, 'voice_close')
-            self.say('voice_router', '已关闭语音模式。', priority=7)
+        interaction_phase = str(event.get('interaction_phase') or 'wake_command')
+        intent = self.classify(text, interaction_phase)
+        if intent.route == 'ignore':
+            self.get_logger().info(
+                f'Ignoring non-task voice text: phase={interaction_phase}, text="{text}"'
+            )
             return
-        if self.contains_any(text, SAFETY_WORDS):
-            self.publish_text_command(text, event, 'global_safety')
-            self.say('voice_router', '已停止。', priority=8)
+        if intent.route == 'voice_close':
+            self.publish_text_command(intent.text, event, 'voice_close')
+            self.say(
+                'voice_router',
+                intent.feedback,
+                priority=7,
+                interrupt=True,
+            )
             return
-        if self.contains_any(text, CANCEL_WORDS):
-            self.publish_text_command(text, event, 'global_cancel')
-            self.say('voice_router', '已取消当前任务。', priority=7)
+        if intent.route == 'system_command':
+            self.publish_system_command(intent.system_command, intent.text, event)
+            self.say(
+                'voice_router',
+                intent.feedback,
+                priority=8,
+                interrupt=intent.system_command in (
+                    'emergency_stop',
+                    'stop_competition_stack',
+                ),
+            )
             return
-        if self.contains_any(text, CHECKOUT_WORDS):
-            self.publish_text_command(text, event, 'checkout')
+        if intent.route == 'unsupported_motion':
+            self.say('voice_router', intent.feedback, priority=7)
             return
-        if self.contains_any(text, MOTION_WORDS):
-            self.publish_text_command(text, event, 'task_a_motion')
+        if intent.route == 'global_safety':
+            self.publish_text_command(intent.text, event, intent.route)
+            self.say(
+                'voice_router',
+                intent.feedback,
+                priority=8,
+                interrupt=True,
+            )
             return
-        if self.contains_any(text, SYSTEM_FEEDBACK_WORDS):
-            self.publish_text_command(text, event, 'system_feedback')
+        if intent.route == 'global_cancel':
+            self.publish_text_command(intent.text, event, intent.route)
+            self.say('voice_router', intent.feedback, priority=7)
+            return
+        if intent.route == 'task_a_motion':
+            self.publish_text_command(intent.text, event, intent.route)
             return
 
-        if self.system_mode == 'running':
+        if self.system_mode == 'running' and intent.route in (
+            'sales',
+            'general_qa',
+            'checkout',
+        ):
             self.say('voice_router', '当前正在执行任务，请等待完成，或说取消任务。', priority=6)
             return
 
-        self.publish_text_command(text, event, 'b2_dialogue')
+        self.publish_text_command(intent.text, event, intent.route)
+
+    def classify(self, text: str, interaction_phase: str) -> VoiceIntent:
+        intent = classify_voice_intent(
+            text,
+            policy=self.routing_policy,
+            interaction_phase=interaction_phase,
+            ignore_unknown_voice=self.ignore_unknown_voice,
+        )
+        if intent.route in ('ignore', 'sales') and interaction_phase != 'sales_followup':
+            custom_motion = self.normalize_custom_motion(text)
+            if custom_motion:
+                return VoiceIntent('task_a_motion', custom_motion)
+        return intent
 
     def publish_text_command(self, text: str, event: Dict[str, Any], route: str) -> None:
         command = {
@@ -143,6 +205,8 @@ class VoiceCommandRouterNode(Node):
             'raw_asr_text': str(event.get('raw_asr_text') or text),
             'awakened': bool(event.get('awakened')),
             'contains_wake_phrase': bool(event.get('contains_wake_phrase')),
+            'interaction_phase': str(
+                event.get('interaction_phase') or 'wake_command'),
             'confidence': float(event.get('confidence') or 0.0),
             'timestamp': float(event.get('timestamp') or time.time()),
         }
@@ -150,6 +214,23 @@ class VoiceCommandRouterNode(Node):
         msg.data = json.dumps(command, ensure_ascii=False)
         self.text_pub.publish(msg)
         self.get_logger().info(f'语音命令已路由到文本指令：{msg.data}')
+
+    def publish_system_command(
+        self, command: str, text: str, event: Dict[str, Any]
+    ) -> None:
+        payload = {
+            'schema_version': '1.0',
+            'source': 'voice',
+            'command': command,
+            'session_id': str(event.get('session_id') or ''),
+            'utterance_id': str(event.get('utterance_id') or ''),
+            'text': text,
+            'timestamp': float(event.get('timestamp') or time.time()),
+        }
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.system_command_pub.publish(msg)
+        self.get_logger().info(f'语音系统命令已发送：{msg.data}')
 
     def sales_status_callback(self, msg: String) -> None:
         try:
@@ -173,24 +254,79 @@ class VoiceCommandRouterNode(Node):
             old = self.recent_utterance_order.pop(0)
             self.recent_utterances.discard(old)
 
-    def normalize_text(self, text: str) -> str:
-        table = str.maketrans('', '', ' ，。！？!?、,. ')
-        cleaned = text.strip().translate(table)
-        for filler in ('呃', '嗯', '啊'):
-            cleaned = cleaned.replace(filler, '')
-        return cleaned
+    def parse_motion_aliases(self, values: List[str]) -> List[Tuple[str, str]]:
+        aliases: List[Tuple[str, str]] = []
+        for value in values:
+            alias, separator, canonical = value.partition(':')
+            if separator and alias.strip() and canonical.strip():
+                aliases.append((alias.strip(), canonical.strip()))
+        aliases.sort(key=lambda item: len(item[0]), reverse=True)
+        return aliases
 
-    def contains_any(self, text: str, words: tuple) -> bool:
-        return any(word in text for word in words)
+    def load_routing_policy(self) -> VoiceRoutingPolicy:
+        product_words: List[str] = []
+        products_file = str(self.get_parameter('products_file').value)
+        try:
+            catalog = ProductCatalog.from_yaml(products_file)
+            for product in catalog.products:
+                product_words.extend([product.name, *product.aliases])
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            self.get_logger().warn(
+                f'Failed to load voice product aliases from {products_file}: {exc}'
+            )
+        return VoiceRoutingPolicy(
+            system_commands=self.parse_system_commands(
+                self.string_list_parameter('system_commands')),
+            voice_close_words=tuple(self.string_list_parameter('voice_close_words')),
+            safety_words=tuple(self.string_list_parameter('safety_words')),
+            cancel_words=tuple(self.string_list_parameter('cancel_words')),
+            checkout_words=tuple(self.string_list_parameter('checkout_words')),
+            system_feedback_words=tuple(
+                self.string_list_parameter('system_feedback_words')),
+            general_qa_words=tuple(self.string_list_parameter('general_qa_words')),
+            sales_need_words=tuple(self.string_list_parameter('sales_need_words')),
+            product_words=tuple(sorted(set(product_words), key=len, reverse=True)),
+            background_words=tuple(self.string_list_parameter('background_words')),
+            followup_words=tuple(
+                self.string_list_parameter('sales_followup_words')),
+            motion_aliases=tuple(self.motion_aliases),
+            incomplete_motion_words=tuple(
+                self.string_list_parameter('incomplete_motion_words')),
+        )
 
-    def is_close_voice_session(self, text: str) -> bool:
-        return any(word == text or word in text for word in VOICE_CLOSE_WORDS)
+    def string_list_parameter(self, name: str) -> List[str]:
+        return [str(value) for value in self.get_parameter(name).value if str(value)]
 
-    def say(self, task_id: str, text: str, priority: int = 5) -> None:
+    def parse_system_commands(
+        self,
+        values: List[str],
+    ) -> Dict[str, Tuple[str, str]]:
+        commands: Dict[str, Tuple[str, str]] = {}
+        for value in values:
+            parts = value.split('|', maxsplit=2)
+            if len(parts) == 3 and all(part.strip() for part in parts):
+                phrase, command, feedback = (part.strip() for part in parts)
+                commands[phrase] = (command, feedback)
+        return commands
+
+    def normalize_custom_motion(self, text: str) -> str:
+        for alias, canonical in self.motion_aliases:
+            if alias == text or alias in text:
+                return canonical
+        return ''
+
+    def say(
+        self,
+        task_id: str,
+        text: str,
+        priority: int = 5,
+        interrupt: bool = False,
+    ) -> None:
         msg = SayText()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.task_id = task_id
         msg.priority = int(priority)
+        msg.interrupt = bool(interrupt)
         msg.text = text
         self.say_pub.publish(msg)
 

@@ -278,6 +278,18 @@ class RetailTaskNode(Node):
         source = str(command_meta.get('source') or 'text')
         route = str(command_meta.get('route') or '')
 
+        if source == 'voice' and route not in (
+            'sales',
+            'general_qa',
+            'checkout',
+            'global_cancel',
+            'system_feedback',
+        ):
+            self.get_logger().info(
+                f'Ignoring non-sales voice route in retail task node: route={route}, text={text}'
+            )
+            return
+
         if route in ('voice_close', 'global_safety'):
             return
 
@@ -440,7 +452,10 @@ class RetailTaskNode(Node):
             self.clear_sales_dialogue()
             self.execute_b2_pick(task_id, product, text, 'local_fallback', 0.8, command_meta)
             return
-        self.say(task_id, '云端理解失败，请直接说出商品名称，例如可乐、矿泉水或纸巾。', priority=7)
+        if command_meta.get('source') == 'voice':
+            self.say(task_id, '请直接说商品名或购物需求。', priority=6)
+            return
+        self.say(task_id, '云端理解失败，请直接说出商品名称。', priority=7)
 
     def handle_active_semantic_dialogue(
         self,

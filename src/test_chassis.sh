@@ -1,8 +1,8 @@
 #!/bin/bash
 echo "=== Terminal 0: Configure SocketCAN for ZLAC8015D ==="
 echo "cd ~/ros2_ws"
-echo "./scripts/setup_zlac_can.sh can0 500000"
-echo "candump -tz can0"
+echo "./scripts/setup_zlac_can.sh can1 500000"
+echo "candump -tz can1"
 echo ""
 echo "=== Terminal 1: Start the default ZLAC chassis backend ==="
 echo "cd ~/ros2_ws"

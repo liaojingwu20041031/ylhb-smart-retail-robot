@@ -89,12 +89,19 @@ basic_motion_command_node:
     # 底盘速度控制话题，base_controller 订阅该话题。
     cmd_vel_topic: /cmd_vel
 
+    # 运动拒绝原因通过语音播报，ZLAC 状态用于避免向离线底盘发送非零速度。
+    say_text_topic: /retail_ai/say_text
+    zlac_status_topic: /zlac8015d/status
+
     # 基本运动调试速度。比赛 A-1 只需展示前进/后退/左转/右转，不追求高速。
     linear_speed: 0.12
     angular_speed: 0.45
 
     # 每条运动指令持续时间，到时自动发布零速度停止。
     motion_duration_sec: 1.0
+    publish_rate_hz: 20.0
+    require_chassis_online: true
+    chassis_status_max_age_sec: 2.5
 
 retail_display_ui_node:
   ros__parameters:
@@ -208,15 +215,63 @@ voice_session_node:
     asr_fail_standby_threshold: 3
     post_event_listen_pause_sec: 3.0
     ignore_empty_asr_after_event_sec: 6.0
+    sales_followup_timeout_sec: 8.0
+    single_wake_default: true
+    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
+    sales_followup_words: [确认, 确定, 就这个, 我要这个, 开始取货, 帮我拿这个, 换一个, 不要这个, 重新推荐, 取消, 取消任务, 不要了, 不用, 不需要, 算了, 结算, 付款, 多少钱, 总价]
 
 voice_command_router_node:
   ros__parameters:
     voice_command_event_topic: /retail_ai/voice_command_event
     text_command_topic: /retail_ai/text_command
+    system_command_topic: /retail_ai/system_command
     sales_dialogue_status_topic: /retail_ai/sales_dialogue_status
     system_mode_topic: /retail_ai/system_mode
     task_status_topic: /retail_ai/task_status
     say_text_topic: /retail_ai/say_text
+    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
+    ignore_unknown_voice: true
+    motion_aliases:
+      - "向前进:前进"
+      - "往前走:前进"
+      - "往前:前进"
+      - "向前:前进"
+      - "前进:前进"
+      - "倒车:后退"
+      - "往后退:后退"
+      - "往后:后退"
+      - "向后:后退"
+      - "后退:后退"
+      - "左旋转:左转"
+      - "向左转:左转"
+      - "左转:左转"
+      - "右旋转:右转"
+      - "向右转:右转"
+      - "右转:右转"
+      - "停下来:停止"
+      - "停下:停止"
+      - "刹车:停止"
+      - "停止:停止"
+      - "停:停止"
+    incomplete_motion_words: [旋转]
+    system_commands:
+      - "启动底盘|start_bringup|已发送启动底盘命令。"
+      - "开始比赛|start_competition_stack|已发送开始比赛命令。"
+      - "开始运行|start_competition_stack|已发送开始比赛命令。"
+      - "停止比赛|stop_competition_stack|已发送停止比赛命令。"
+      - "紧急停止|emergency_stop|已发送紧急停止命令。"
+      - "急停|emergency_stop|已发送紧急停止命令。"
+      - "返回准备状态|return_ready|已发送返回准备状态命令。"
+      - "返回准备|return_ready|已发送返回准备状态命令。"
+    voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
+    safety_words: [急停, 停下, 别动, 刹车, 停止]
+    cancel_words: [取消任务, 取消当前任务, 不要了]
+    checkout_words: [多少钱, 结算, 总价, 一共, 付款]
+    system_feedback_words: [怎么不说话, 你怎么不说话, 没声音, 听不到, 没有声音, 你没说话, 语音坏了]
+    general_qa_words: [介绍一下自己, 介绍自己, 你是谁, 你能做什么, 你会做什么, 有什么功能, 能干什么, 怎么用, 使用方法, 语音怎么用, 有什么商品, 卖什么, 有哪些东西, 商品列表]
+    sales_need_words: [我要, 我想要, 想买, 买, 拿, 帮我拿, 口渴, 喝水, 渴了, 解渴, 饮料, 喝的, 饿, 吃东西, 吃的, 零食, 水果, 困了, 没精神, 提神, 生活用品, 日用品, 擦嘴, 清洁]
+    background_words: [ai不出来, AI不出来, 差不多, 调试, 报错, 日志, 代码, 网络, 麦克风]
+    sales_followup_words: [确认, 确定, 就这个, 我要这个, 开始取货, 帮我拿这个, 换一个, 不要这个, 重新推荐, 取消, 取消任务, 不要了, 不用, 不需要, 算了, 结算, 付款, 多少钱, 总价]
 
 voice_output_node:
   ros__parameters:
@@ -251,5 +306,6 @@ voice_output_node:
     request_timeout_sec: 10.0
     enable_tts_cache: true
     split_long_tts: true
-    tts_segment_max_chars: 90
-    preserve_b2_tts_single_request: true
+    tts_segment_max_chars: 70
+    preserve_b2_tts_single_request: false
+    interrupt_current_playback: true

@@ -17,18 +17,12 @@ from std_srvs.srv import Trigger
 from ylhb_interfaces.msg import SayText, VoiceStatus
 
 from .qwen_client import QwenClient, QwenClientError
-
-
-VOICE_CLOSE_WORDS = (
-    '关闭语音模式',
-    '退出语音模式',
-    '停止语音模式',
-    '关闭语音',
-    '退出语音',
-    '关掉语音',
-    '结束语音',
-    '关机',
+from .voice_stability import (
+    VoiceRoutingPolicy,
+    is_sales_followup_text,
+    normalize_voice_text,
 )
+
 
 ASR_TIMEOUT_MARKER = '__ASR_TIMEOUT__'
 
@@ -49,6 +43,7 @@ class VoiceSessionNode(Node):
         self.declare_parameter('voice_session_status_topic', '/retail_ai/voice_session_status')
         self.declare_parameter('say_text_topic', '/retail_ai/say_text')
         self.declare_parameter('voice_status_topic', '/retail_ai/voice_status')
+        self.declare_parameter('sales_dialogue_status_topic', '/retail_ai/sales_dialogue_status')
         self.declare_parameter('start_voice_session_service_name', '/retail_ai/start_voice_session')
         self.declare_parameter('stop_voice_session_service_name', '/retail_ai/stop_voice_session')
         self.declare_parameter('audio_device', 'default')
@@ -73,6 +68,10 @@ class VoiceSessionNode(Node):
         self.declare_parameter('asr_fail_standby_threshold', 3)
         self.declare_parameter('post_event_listen_pause_sec', 3.0)
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
+        self.declare_parameter('sales_followup_timeout_sec', 8.0)
+        self.declare_parameter('single_wake_default', True)
+        self.declare_parameter('sales_followup_words', [])
+        self.declare_parameter('voice_close_words', [])
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)
@@ -100,6 +99,21 @@ class VoiceSessionNode(Node):
         self.post_event_listen_pause_sec = float(self.get_parameter('post_event_listen_pause_sec').value)
         self.ignore_empty_asr_after_event_sec = float(
             self.get_parameter('ignore_empty_asr_after_event_sec').value)
+        self.sales_followup_timeout_sec = float(
+            self.get_parameter('sales_followup_timeout_sec').value)
+        self.single_wake_default = bool(self.get_parameter('single_wake_default').value)
+        self.followup_policy = VoiceRoutingPolicy(
+            followup_words=tuple(
+                str(value)
+                for value in self.get_parameter('sales_followup_words').value
+                if str(value)
+            )
+        )
+        self.voice_close_words = tuple(
+            str(value)
+            for value in self.get_parameter('voice_close_words').value
+            if str(value)
+        )
 
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
         self.event_pub = self.create_publisher(String, self.get_parameter('voice_command_event_topic').value, 10)
@@ -111,6 +125,12 @@ class VoiceSessionNode(Node):
             self.get_parameter('voice_status_topic').value,
             self.voice_status_callback,
             10,
+        )
+        self.create_subscription(
+            String,
+            self.get_parameter('sales_dialogue_status_topic').value,
+            self.sales_dialogue_status_callback,
+            transient_qos(),
         )
         self.create_service(
             Trigger,
@@ -141,6 +161,8 @@ class VoiceSessionNode(Node):
         self.last_active_at = 0.0
         self.pause_listen_until = 0.0
         self.last_event_published_at = 0.0
+        self.sales_followup_until = 0.0
+        self.in_sales_followup = False
 
         self.worker = threading.Thread(target=self.session_loop, daemon=True)
         self.worker.start()
@@ -169,6 +191,8 @@ class VoiceSessionNode(Node):
             self.last_active_at = time.monotonic()
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0
+            self.sales_followup_until = 0.0
+            self.in_sales_followup = False
             self.set_state('WAIT_WAKE')
         self.say('voice_session', f'语音模式已开启，请先说{self.wake_phrase}。', priority=6)
         self.publish_status()
@@ -190,8 +214,32 @@ class VoiceSessionNode(Node):
         if self.last_tts_speaking and not speaking:
             self.last_active_at = now
             self.pause_listen_until = max(self.pause_listen_until, now + 0.3)
+            if self.in_sales_followup:
+                self.sales_followup_until = now + self.sales_followup_timeout_sec
         self.is_tts_playing = speaking
         self.last_tts_speaking = speaking
+
+    def sales_dialogue_status_callback(self, msg: String) -> None:
+        if not self.session_enabled:
+            self.in_sales_followup = False
+            self.sales_followup_until = 0.0
+            return
+        try:
+            status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        active = bool(status.get('active'))
+        waiting_for = str(status.get('waiting_for') or '')
+        pending_product_id = str(status.get('pending_product_id') or '')
+        if active and (waiting_for or pending_product_id):
+            now = time.monotonic()
+            self.sales_followup_until = now + self.sales_followup_timeout_sec
+            self.in_sales_followup = True
+            self.last_active_at = now
+            self.set_state('SALES_FOLLOWUP')
+            return
+        self.in_sales_followup = False
+        self.sales_followup_until = 0.0
 
     def set_state(self, state: str) -> None:
         if self.state == state:
@@ -221,10 +269,12 @@ class VoiceSessionNode(Node):
                 self.say('voice_session', f'语音会话已待机，请说{self.wake_phrase}重新唤醒。', priority=4)
                 continue
 
-            self.set_state('LISTENING' if self.awakened else 'WAIT_WAKE')
+            self.update_followup_window()
+            listen_without_wake = self.awakened or self.in_sales_followup
+            self.set_state('LISTENING' if listen_without_wake else 'WAIT_WAKE')
             idle_deadline = (
                 self.last_active_at + self.session_idle_timeout_sec
-                if self.awakened else 0.0
+                if listen_without_wake else 0.0
             )
             audio = self.wait_and_record_by_vad(idle_deadline=idle_deadline)
             if not audio:
@@ -250,13 +300,15 @@ class VoiceSessionNode(Node):
             self.set_state('AWAKENED_IDLE')
             self.get_logger().info('Ignoring empty ASR shortly after valid voice event.')
             return
-        if not self.awakened:
+        if not self.awakened and not self.in_sales_followup:
             self.asr_fail_count = 0
             self.set_state('WAIT_WAKE')
             return
         self.asr_fail_count += 1
         if self.asr_fail_count >= self.asr_fail_standby_threshold:
             self.awakened = False
+            self.in_sales_followup = False
+            self.sales_followup_until = 0.0
             self.set_state('WAIT_WAKE')
             self.say('voice_session', f'多次没有听清，已回到待唤醒。请说{self.wake_phrase}。', priority=5)
             return
@@ -296,7 +348,7 @@ class VoiceSessionNode(Node):
         loud = 0
         effective_energy_threshold = self.energy_threshold
         effective_start_frames = self.voice_start_frames_required
-        if not self.awakened:
+        if not self.awakened and not self.in_sales_followup:
             effective_energy_threshold = int(self.energy_threshold * 1.8)
             effective_start_frames = max(self.voice_start_frames_required, 6)
         try:
@@ -379,14 +431,25 @@ class VoiceSessionNode(Node):
                 pass
 
     def handle_asr_text(self, raw_text: str) -> None:
-        normalized = self.normalize_text(raw_text)
+        normalized = normalize_voice_text(raw_text)
         contains_wake = self.has_wake_phrase(normalized)
         command = self.strip_wake_phrase(normalized) if contains_wake else normalized
-        if any(word in command for word in VOICE_CLOSE_WORDS):
+        if any(word in command for word in self.voice_close_words):
             self.stop_session('语音模式已关闭。', say=True)
             return
 
-        if not self.awakened:
+        self.update_followup_window()
+        interaction_phase = 'wake_command'
+        if self.in_sales_followup and not contains_wake:
+            if not is_sales_followup_text(command, self.followup_policy):
+                self.set_state('SALES_FOLLOWUP')
+                self.get_logger().info(
+                    f'Ignoring non-followup voice text in sales window: {command}'
+                )
+                return
+            interaction_phase = 'sales_followup'
+            self.last_active_at = time.monotonic()
+        elif not self.awakened:
             if not contains_wake:
                 self.set_state('WAIT_WAKE')
                 return
@@ -403,10 +466,20 @@ class VoiceSessionNode(Node):
         if not command:
             self.set_state('AWAKENED_IDLE')
             return
-        self.publish_voice_event(command, raw_text, contains_wake)
-        self.set_state('AWAKENED_IDLE')
+        self.publish_voice_event(command, raw_text, contains_wake, interaction_phase)
+        if self.single_wake_default and interaction_phase == 'wake_command':
+            self.awakened = False
+            self.set_state('WAIT_WAKE')
+        else:
+            self.set_state('AWAKENED_IDLE')
 
-    def publish_voice_event(self, text: str, raw_text: str, contains_wake: bool) -> None:
+    def publish_voice_event(
+        self,
+        text: str,
+        raw_text: str,
+        contains_wake: bool,
+        interaction_phase: str,
+    ) -> None:
         self.utterance_seq += 1
         utterance_id = f'utt_{self.utterance_seq:04d}'
         payload = {
@@ -417,6 +490,7 @@ class VoiceSessionNode(Node):
             'raw_asr_text': raw_text,
             'awakened': bool(self.awakened),
             'contains_wake_phrase': bool(contains_wake),
+            'interaction_phase': interaction_phase,
             'confidence': 0.8,
             'timestamp': time.time(),
         }
@@ -438,16 +512,11 @@ class VoiceSessionNode(Node):
             self.is_recording = False
             self.pause_listen_until = 0.0
             self.last_event_published_at = 0.0
+            self.sales_followup_until = 0.0
+            self.in_sales_followup = False
         if say:
-            self.say('voice_session', text, priority=6)
+            self.say('voice_session', text, priority=6, interrupt=True)
         self.publish_status()
-
-    def normalize_text(self, text: str) -> str:
-        table = str.maketrans('', '', ' ，。！？!?、,. ')
-        cleaned = text.strip().translate(table)
-        for filler in ('呃', '嗯', '啊'):
-            cleaned = cleaned.replace(filler, '')
-        return cleaned
 
     def has_wake_phrase(self, text: str) -> bool:
         return any(alias and alias in text for alias in self.wake_aliases)
@@ -458,13 +527,25 @@ class VoiceSessionNode(Node):
             command = command.replace(alias, '')
         return command.strip()
 
-    def say(self, task_id: str, text: str, priority: int = 5) -> None:
+    def update_followup_window(self) -> None:
+        if self.in_sales_followup and time.monotonic() >= self.sales_followup_until:
+            self.in_sales_followup = False
+            self.sales_followup_until = 0.0
+
+    def say(
+        self,
+        task_id: str,
+        text: str,
+        priority: int = 5,
+        interrupt: bool = False,
+    ) -> None:
         if task_id == 'voice_session':
             self.pause_listen_until = max(self.pause_listen_until, time.monotonic() + 2.0)
         msg = SayText()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.task_id = task_id
         msg.priority = int(priority)
+        msg.interrupt = bool(interrupt)
         msg.text = text
         self.say_pub.publish(msg)
 
@@ -476,7 +557,14 @@ class VoiceSessionNode(Node):
             'awakened': bool(self.awakened),
             'session_id': self.session_id,
             'active_module': '',
-            'waiting_for': 'wake_phrase' if self.session_enabled and not self.awakened else '',
+            'waiting_for': (
+                'sales_followup'
+                if self.in_sales_followup
+                else 'wake_phrase'
+                if self.session_enabled and not self.awakened
+                else ''
+            ),
+            'interaction_phase': 'sales_followup' if self.in_sales_followup else 'wake_command',
             'is_tts_playing': bool(self.is_tts_playing),
             'is_recording': bool(self.is_recording),
             'asr_fail_count': int(self.asr_fail_count),

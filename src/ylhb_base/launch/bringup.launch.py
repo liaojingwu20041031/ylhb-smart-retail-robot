@@ -178,7 +178,10 @@ def serial_nodes(context, *args, **kwargs):
     imu_baud_rate_text = LaunchConfiguration('imu_baud_rate').perform(context)
     lidar_baudrate_text = LaunchConfiguration('lidar_baudrate').perform(context)
     lidar_frame_id = LaunchConfiguration('lidar_frame_id').perform(context)
-    enable_imu = LaunchConfiguration('enable_imu').perform(context).lower() in ('1', 'true', 'yes', 'on')
+    enable_imu = (
+        LaunchConfiguration('enable_imu').perform(context).lower()
+        in ('1', 'true', 'yes', 'on')
+    )
 
     actions = []
     if not os.path.exists(lidar_port):

@@ -63,7 +63,7 @@
     <parent link="base_link"/>
     <child link="imu_link"/>
     <!-- 匹配 ROS 前左上标准坐标系 (X为前，Y为左，Z为上) -->
-    <origin xyz="0.280 0 0.107" rpy="0 0 0"/>
+    <origin xyz="-0.280 0 0.107" rpy="0 0 0"/>
   </joint>
 
   <joint name="base_to_laser_joint" type="fixed">
@@ -72,7 +72,7 @@
     <!-- 方向标定：雷达自身输出的数据 Y轴正方向 对准了 小车的车头(正前X轴方向)。
          这意味着雷达自身的 X轴 指向了小车的右侧 (-Y方向)。
          因此，雷达坐标系相对于小车主坐标系顺时针旋转了90度，即 Yaw = -1.5707963 -->
-    <origin xyz="0.090 0 0.1805" rpy="0 0 -1.5707963"/>
+    <origin xyz="-0.090 0 0.1805" rpy="0 0 -1.5707963"/>
   </joint>
 
 </robot>

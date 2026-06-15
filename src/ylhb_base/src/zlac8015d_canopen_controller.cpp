@@ -28,7 +28,14 @@
 #include <string>
 #include <utility>
 
+#include "ylhb_base/zlac_drive_mapping.hpp"
+
 using namespace std::chrono_literals;
+using ylhb_base::ChannelFaults;
+using ylhb_base::ChannelRpm;
+using ylhb_base::DifferentialDriveKinematics;
+using ylhb_base::LogicalWheelRpm;
+using ylhb_base::ZlacChannelMapping;
 
 namespace
 {
@@ -41,12 +48,6 @@ constexpr uint16_t kProfileAcceleration = 0x6083;
 constexpr uint16_t kProfileDeceleration = 0x6084;
 constexpr uint16_t kFaultCode = 0x603F;
 constexpr uint16_t kVendorControlMode = 0x200F;
-
-template <typename T>
-T clamp_value(T value, T min_value, T max_value)
-{
-  return std::max(min_value, std::min(value, max_value));
-}
 
 std::string frame_to_string(const can_frame & frame)
 {
@@ -81,50 +82,6 @@ std::string fault_text(uint16_t code)
   return out.str();
 }
 }  // namespace
-
-class DifferentialDriveKinematics
-{
-public:
-  DifferentialDriveKinematics(
-    double wheel_radius, double wheel_track, double max_linear_speed,
-    double max_angular_speed, double left_direction, double right_direction)
-  : wheel_radius_(wheel_radius),
-    wheel_track_(wheel_track),
-    max_linear_speed_(max_linear_speed),
-    max_angular_speed_(max_angular_speed),
-    left_direction_(left_direction >= 0.0 ? 1.0 : -1.0),
-    right_direction_(right_direction >= 0.0 ? 1.0 : -1.0)
-  {
-  }
-
-  std::pair<double, double> twist_to_wheel_rpm(double linear_x, double angular_z) const
-  {
-    const double vx = clamp_value(linear_x, -max_linear_speed_, max_linear_speed_);
-    const double wz = clamp_value(angular_z, -max_angular_speed_, max_angular_speed_);
-    const double left_mps = vx - wz * wheel_track_ * 0.5;
-    const double right_mps = vx + wz * wheel_track_ * 0.5;
-    const double meters_per_rev = 2.0 * M_PI * wheel_radius_;
-    return {
-      left_direction_ * left_mps / meters_per_rev * 60.0,
-      right_direction_ * right_mps / meters_per_rev * 60.0};
-  }
-
-  std::pair<double, double> wheel_rpm_to_twist(double left_rpm, double right_rpm) const
-  {
-    const double meters_per_rev = 2.0 * M_PI * wheel_radius_;
-    const double left_mps = left_direction_ * left_rpm / 60.0 * meters_per_rev;
-    const double right_mps = right_direction_ * right_rpm / 60.0 * meters_per_rev;
-    return {(left_mps + right_mps) * 0.5, (right_mps - left_mps) / wheel_track_};
-  }
-
-private:
-  double wheel_radius_;
-  double wheel_track_;
-  double max_linear_speed_;
-  double max_angular_speed_;
-  double left_direction_;
-  double right_direction_;
-};
 
 class Zlac8015DCanopenClient
 {
@@ -244,11 +201,11 @@ public:
     return send_frame(frame);
   }
 
-  bool write_target_velocity(double left_rpm, double right_rpm)
+  bool write_target_velocity(double low_channel_rpm, double high_channel_rpm)
   {
-    const uint16_t left = static_cast<uint16_t>(rpm_to_target_units(left_rpm));
-    const uint16_t right = static_cast<uint16_t>(rpm_to_target_units(right_rpm));
-    const uint32_t packed = static_cast<uint32_t>(left) | (static_cast<uint32_t>(right) << 16);
+    const uint16_t low = static_cast<uint16_t>(rpm_to_target_units(low_channel_rpm));
+    const uint16_t high = static_cast<uint16_t>(rpm_to_target_units(high_channel_rpm));
+    const uint32_t packed = static_cast<uint32_t>(low) | (static_cast<uint32_t>(high) << 16);
     return write_i32(kTargetVelocity, 0x03, static_cast<int32_t>(packed));
   }
 
@@ -334,11 +291,11 @@ public:
     if (response.index != kActualVelocity || response.subindex != 0x03) {
       return std::nullopt;
     }
-    const int16_t left_raw = static_cast<int16_t>(response.raw & 0xFFFF);
-    const int16_t right_raw = static_cast<int16_t>((response.raw >> 16) & 0xFFFF);
+    const int16_t low_raw = static_cast<int16_t>(response.raw & 0xFFFF);
+    const int16_t high_raw = static_cast<int16_t>((response.raw >> 16) & 0xFFFF);
     return std::make_pair(
-      static_cast<double>(left_raw) / actual_velocity_unit_per_rpm_,
-      static_cast<double>(right_raw) / actual_velocity_unit_per_rpm_);
+      static_cast<double>(low_raw) / actual_velocity_unit_per_rpm_,
+      static_cast<double>(high_raw) / actual_velocity_unit_per_rpm_);
   }
 
   std::optional<uint32_t> decode_fault(const SdoResponse & response) const
@@ -418,7 +375,7 @@ private:
   int32_t rpm_to_target_units(double rpm) const
   {
     const double scaled = std::round(rpm * target_velocity_unit_per_rpm_);
-    return static_cast<int32_t>(clamp_value(
+    return static_cast<int32_t>(std::clamp(
       scaled, static_cast<double>(std::numeric_limits<int16_t>::min()),
       static_cast<double>(std::numeric_limits<int16_t>::max())));
   }
@@ -520,8 +477,9 @@ public:
     load_parameters();
 
     kinematics_ = std::make_unique<DifferentialDriveKinematics>(
-      wheel_radius_, wheel_track_, max_linear_speed_, max_angular_speed_,
-      left_direction_, right_direction_);
+      wheel_radius_, wheel_track_, max_linear_speed_, max_angular_speed_);
+    channel_mapping_ = std::make_unique<ZlacChannelMapping>(
+      low_channel_is_left_, low_channel_direction_, high_channel_direction_);
     odom_integrator_ = std::make_unique<OdometryIntegrator>(odom_frame_, base_frame_);
     client_ = std::make_unique<Zlac8015DCanopenClient>(
       can_interface_, static_cast<uint8_t>(node_id_), sdo_timeout_ms_,
@@ -576,8 +534,9 @@ private:
     declare_parameter<double>("max_angular_speed", 1.2);
     declare_parameter<double>("max_linear_velocity", 0.0);
     declare_parameter<double>("max_angular_velocity", 0.0);
-    declare_parameter<double>("left_direction", 1.0);
-    declare_parameter<double>("right_direction", -1.0);
+    declare_parameter<bool>("low_channel_is_left", false);
+    declare_parameter<double>("low_channel_direction", -1.0);
+    declare_parameter<double>("high_channel_direction", 1.0);
     declare_parameter<std::string>("odom_frame", "odom");
     declare_parameter<std::string>("base_frame", "base_footprint");
     declare_parameter<bool>("publish_tf", false);
@@ -629,8 +588,11 @@ private:
         max_angular_speed_ = max_angular_velocity;
       }
     }
-    get_parameter("left_direction", left_direction_);
-    get_parameter("right_direction", right_direction_);
+    get_parameter("low_channel_is_left", low_channel_is_left_);
+    get_parameter("low_channel_direction", low_channel_direction_);
+    get_parameter("high_channel_direction", high_channel_direction_);
+    normalize_channel_direction("low_channel_direction", low_channel_direction_);
+    normalize_channel_direction("high_channel_direction", high_channel_direction_);
     get_parameter("odom_frame", odom_frame_);
     get_parameter("base_frame", base_frame_);
     get_parameter("publish_tf", publish_tf_);
@@ -671,6 +633,16 @@ private:
     return overrides.find(name) != overrides.end();
   }
 
+  void normalize_channel_direction(const char * name, double & value)
+  {
+    const double requested = value;
+    value = ZlacChannelMapping::normalize_direction(value);
+    if (requested != value) {
+      RCLCPP_WARN(get_logger(), "%s must be +1.0 or -1.0; normalized %.3f to %.1f",
+        name, requested, value);
+    }
+  }
+
   void create_timers()
   {
     can_poll_timer_ = create_wall_timer(period_from_hz(can_poll_rate_hz_),
@@ -698,8 +670,10 @@ private:
     if (!online_) {
       return;
     }
-    const auto [left_rpm, right_rpm] = kinematics_->twist_to_wheel_rpm(msg->linear.x, msg->angular.z);
-    client_->write_target_velocity(left_rpm, right_rpm);
+    const auto logical_rpm =
+      kinematics_->twist_to_wheel_rpm(msg->linear.x, msg->angular.z);
+    const auto channels = channel_mapping_->logical_to_channels(logical_rpm);
+    client_->write_target_velocity(channels.low, channels.high);
   }
 
   void poll_can()
@@ -722,8 +696,12 @@ private:
 
       const auto & response = event->sdo;
       if (auto rpm = client_->decode_actual_rpm(response)) {
-        left_actual_rpm_ = rpm->first;
-        right_actual_rpm_ = rpm->second;
+        low_channel_actual_rpm_ = rpm->first;
+        high_channel_actual_rpm_ = rpm->second;
+        const auto logical_rpm = channel_mapping_->channels_to_logical(
+          ChannelRpm{low_channel_actual_rpm_, high_channel_actual_rpm_});
+        left_actual_rpm_ = logical_rpm.left;
+        right_actual_rpm_ = logical_rpm.right;
         last_feedback_time_ = now();
         publish_odom();
       }
@@ -768,7 +746,8 @@ private:
 
   void publish_odom()
   {
-    const auto [vx, wz] = kinematics_->wheel_rpm_to_twist(left_actual_rpm_, right_actual_rpm_);
+    const auto [vx, wz] =
+      kinematics_->wheel_rpm_to_twist(LogicalWheelRpm{left_actual_rpm_, right_actual_rpm_});
     auto odom = odom_integrator_->update(now(), vx, wz);
     odom_pub_->publish(odom);
 
@@ -790,13 +769,16 @@ private:
       return;
     }
     client_->write_target_velocity(0.0, 0.0);
-    const uint16_t right_fault = static_cast<uint16_t>(fault & 0xFFFF);
-    const uint16_t left_fault = static_cast<uint16_t>((fault >> 16) & 0xFFFF);
+    const auto logical_faults = channel_mapping_->channels_to_logical(ChannelFaults{
+      static_cast<uint16_t>(fault & 0xFFFF),
+      static_cast<uint16_t>((fault >> 16) & 0xFFFF)});
     std::ostringstream msg;
     msg << "raw=0x" << std::hex << std::uppercase
         << std::setw(8) << std::setfill('0') << fault
-        << " left=0x" << std::setw(4) << left_fault << "(" << fault_text(left_fault) << ")"
-        << " right=0x" << std::setw(4) << right_fault << "(" << fault_text(right_fault) << ")";
+        << " left=0x" << std::setw(4) << logical_faults.left
+        << "(" << fault_text(logical_faults.left) << ")"
+        << " right=0x" << std::setw(4) << logical_faults.right
+        << "(" << fault_text(logical_faults.right) << ")";
     std_msgs::msg::String out;
     out.data = msg.str();
     fault_pub_->publish(out);
@@ -833,6 +815,8 @@ private:
         << std::dec << " heartbeat_age_sec=" << heartbeat_age
         << " feedback_age_sec=" << feedback_age
         << std::dec << " left_rpm=" << left_actual_rpm_ << " right_rpm=" << right_actual_rpm_
+        << " low_channel_rpm=" << low_channel_actual_rpm_
+        << " high_channel_rpm=" << high_channel_actual_rpm_
         << " timed_out=" << (timed_out_ ? "true" : "false");
     std_msgs::msg::String out;
     out.data = msg.str();
@@ -845,8 +829,9 @@ private:
   double wheel_track_ = 0.25;
   double max_linear_speed_ = 0.6;
   double max_angular_speed_ = 1.2;
-  double left_direction_ = 1.0;
-  double right_direction_ = -1.0;
+  bool low_channel_is_left_ = false;
+  double low_channel_direction_ = -1.0;
+  double high_channel_direction_ = 1.0;
   std::string odom_frame_ = "odom";
   std::string base_frame_ = "base_footprint";
   bool publish_tf_ = false;
@@ -870,12 +855,15 @@ private:
   bool timed_out_ = false;
   double left_actual_rpm_ = 0.0;
   double right_actual_rpm_ = 0.0;
+  double low_channel_actual_rpm_ = 0.0;
+  double high_channel_actual_rpm_ = 0.0;
   uint8_t heartbeat_state_ = 0;
   rclcpp::Time last_cmd_time_;
   rclcpp::Time last_heartbeat_time_;
   rclcpp::Time last_feedback_time_;
 
   std::unique_ptr<DifferentialDriveKinematics> kinematics_;
+  std::unique_ptr<ZlacChannelMapping> channel_mapping_;
   std::unique_ptr<Zlac8015DCanopenClient> client_;
   std::unique_ptr<OdometryIntegrator> odom_integrator_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

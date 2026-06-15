@@ -29,6 +29,7 @@ ament_target_dependencies(base_controller
 )
 
 add_executable(zlac8015d_canopen_controller src/zlac8015d_canopen_controller.cpp)
+target_include_directories(zlac8015d_canopen_controller PRIVATE include)
 ament_target_dependencies(zlac8015d_canopen_controller
   rclcpp
   std_msgs
@@ -86,6 +87,7 @@ install(DIRECTORY
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
@@ -100,6 +102,11 @@ if(BUILD_TESTING)
   # xmllint fetches the ROS package schema over the network in this environment.
   set(ament_cmake_xmllint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_zlac_drive_mapping test/test_zlac_drive_mapping.cpp)
+  target_include_directories(test_zlac_drive_mapping PRIVATE include)
+  target_compile_definitions(test_zlac_drive_mapping PRIVATE
+    BASE_KINEMATICS_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/base_kinematics.yaml")
 endif()
 
 ament_package()

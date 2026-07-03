@@ -33,6 +33,7 @@ class VoiceOutputNode(Node):
         self.declare_parameter('tts_segment_max_chars', 70)
         self.declare_parameter('preserve_b2_tts_single_request', True)
         self.declare_parameter('interrupt_current_playback', True)
+        self.declare_parameter('playback_speed', 1.20)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         self.tts_enabled = bool(self.get_parameter('tts_enabled').value)
@@ -50,6 +51,7 @@ class VoiceOutputNode(Node):
             self.get_parameter('preserve_b2_tts_single_request').value)
         self.interrupt_current_playback = bool(
             self.get_parameter('interrupt_current_playback').value)
+        self.playback_speed = float(self.get_parameter('playback_speed').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.queue: 'queue.PriorityQueue[tuple[int, float, SayText]]' = queue.PriorityQueue()
         self.stop_event = threading.Event()
@@ -149,11 +151,12 @@ class VoiceOutputNode(Node):
             self.publish_status_once()
             time.sleep(0.25)
 
+            playback_path = self.prepare_playback_audio(audio_path)
             cmd = ['aplay', '-q']
             if self.audio_device and self.audio_device != 'default':
                 cmd.extend(['-D', self.audio_device])
-            cmd.append(audio_path)
-            duration = safe_wav_duration_sec(audio_path)
+            cmd.append(playback_path)
+            duration = safe_wav_duration_sec(playback_path)
             play_timeout = min(45.0, max(8.0, duration + 5.0))
             self.get_logger().info(
                 f'音频播放开始：task_id={task_id}, device={self.audio_device}, '
@@ -185,6 +188,50 @@ class VoiceOutputNode(Node):
                 os.unlink(audio_path)
             except OSError:
                 pass
+            if 'playback_path' in locals() and playback_path != audio_path:
+                try:
+                    os.unlink(playback_path)
+                except OSError:
+                    pass
+
+    def prepare_playback_audio(self, audio_path: str) -> str:
+        if abs(self.playback_speed - 1.0) < 0.001:
+            return audio_path
+        with tempfile.NamedTemporaryFile(
+            prefix='ylhb_tts_tempo_',
+            suffix='.wav',
+            delete=False,
+        ) as output:
+            output_path = output.name
+        if self.run_sox_tempo(audio_path, output_path):
+            return output_path
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+        return audio_path
+
+    def run_sox_tempo(self, source_path: str, target_path: str) -> bool:
+        speed = f'{self.playback_speed:g}'
+        try:
+            result = subprocess.run(
+                ['sox', source_path, target_path, 'tempo', speed],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.get_logger().warn(f'音频提速失败，使用原始音频：{exc}')
+            return False
+        if result.returncode == 0:
+            return True
+        self.get_logger().warn(
+            f'音频提速失败，使用原始音频：sox_exit={result.returncode}, '
+            f'error={result.stderr.strip()[:160]}'
+        )
+        return False
 
     def should_split_tts(self, task_id: str, text: str) -> bool:
         if not self.split_long_tts:

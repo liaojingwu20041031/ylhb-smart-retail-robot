@@ -18,6 +18,8 @@ def generate_launch_description():
     default_map_output_dir = os.path.join(workspace_dir, 'src', 'maps')
     default_perception_model = os.path.join(
         workspace_dir, 'src', 'ylhb_perception', 'models', 'yolo26.engine')
+    default_route_file = os.path.join(
+        workspace_dir, 'maps', 'routes', 'retail_competition_route.json')
 
     params_file = LaunchConfiguration('params_file')
     products_file = LaunchConfiguration('products_file')
@@ -38,6 +40,13 @@ def generate_launch_description():
     enable_task_layer = LaunchConfiguration('enable_task_layer')
     enable_display_ui = LaunchConfiguration('enable_display_ui')
     enable_system_supervisor = LaunchConfiguration('enable_system_supervisor')
+    enable_competition_executor = LaunchConfiguration('enable_competition_executor')
+    enable_vlm_shelf = LaunchConfiguration('enable_vlm_shelf')
+    enable_vlm_checkout = LaunchConfiguration('enable_vlm_checkout')
+    competition_safe_mode = LaunchConfiguration('competition_safe_mode')
+    enable_real_arm = LaunchConfiguration('enable_real_arm')
+    skip_arm_pick_place = LaunchConfiguration('skip_arm_pick_place')
+    route_file = LaunchConfiguration('route_file')
     task_image_dir = LaunchConfiguration('task_image_dir')
     initial_system_mode = LaunchConfiguration('initial_system_mode')
     fullscreen = LaunchConfiguration('fullscreen')
@@ -67,6 +76,13 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_task_layer', default_value='true'),
         DeclareLaunchArgument('enable_display_ui', default_value='true'),
         DeclareLaunchArgument('enable_system_supervisor', default_value='true'),
+        DeclareLaunchArgument('enable_competition_executor', default_value='false'),
+        DeclareLaunchArgument('enable_vlm_shelf', default_value='false'),
+        DeclareLaunchArgument('enable_vlm_checkout', default_value='false'),
+        DeclareLaunchArgument('competition_safe_mode', default_value='true'),
+        DeclareLaunchArgument('enable_real_arm', default_value='false'),
+        DeclareLaunchArgument('skip_arm_pick_place', default_value='true'),
+        DeclareLaunchArgument('route_file', default_value=default_route_file),
         DeclareLaunchArgument('task_image_dir', default_value=default_task_image_dir),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
@@ -90,6 +106,53 @@ def generate_launch_description():
                     'vl_model': vl_model,
                     'chat_model': chat_model,
                     'task_image_dir': task_image_dir,
+                    'shelf_snapshot_ttl_sec': 15.0,
+                },
+            ],
+        ),
+        Node(
+            package='ylhb_llm',
+            executable='retail_competition_executor_node',
+            name='retail_competition_executor_node',
+            output='screen',
+            condition=IfCondition(enable_competition_executor),
+            parameters=[
+                params_file,
+                {
+                    'route_file': route_file,
+                    'competition_safe_mode': ParameterValue(competition_safe_mode, value_type=bool),
+                    'enable_real_arm': ParameterValue(enable_real_arm, value_type=bool),
+                    'skip_arm_pick_place': ParameterValue(skip_arm_pick_place, value_type=bool),
+                },
+            ],
+        ),
+        Node(
+            package='ylhb_llm',
+            executable='vlm_shelf_recognition_node',
+            name='vlm_shelf_recognition_node',
+            output='screen',
+            condition=IfCondition(enable_vlm_shelf),
+            parameters=[
+                params_file,
+                {
+                    'products_file': products_file,
+                    'dashscope_base_url': dashscope_base_url,
+                    'vl_model': vl_model,
+                },
+            ],
+        ),
+        Node(
+            package='ylhb_llm',
+            executable='vlm_checkout_recognition_node',
+            name='vlm_checkout_recognition_node',
+            output='screen',
+            condition=IfCondition(enable_vlm_checkout),
+            parameters=[
+                params_file,
+                {
+                    'products_file': products_file,
+                    'dashscope_base_url': dashscope_base_url,
+                    'vl_model': vl_model,
                 },
             ],
         ),
@@ -203,6 +266,9 @@ def generate_launch_description():
                 {
                     'task_image_dir': task_image_dir,
                     'initial_system_mode': initial_system_mode,
+                    'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool),
+                    'enable_capture_voice': ParameterValue(enable_capture_voice, value_type=bool),
+                    'enable_tts': ParameterValue(enable_tts, value_type=bool),
                     'fullscreen': ParameterValue(fullscreen, value_type=bool),
                     'display': display,
                     'force_local_display': ParameterValue(force_local_display, value_type=bool),

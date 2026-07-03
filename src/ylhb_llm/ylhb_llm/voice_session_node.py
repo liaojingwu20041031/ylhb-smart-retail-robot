@@ -10,6 +10,7 @@ from typing import List, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -19,7 +20,6 @@ from ylhb_interfaces.msg import SayText, VoiceStatus
 from .qwen_client import QwenClient, QwenClientError
 from .voice_stability import (
     VoiceRoutingPolicy,
-    is_sales_followup_text,
     normalize_voice_text,
 )
 
@@ -53,7 +53,10 @@ class VoiceSessionNode(Node):
         self.declare_parameter('asr_model', 'qwen3-asr-flash')
         self.declare_parameter('request_timeout_sec', 15.0)
         self.declare_parameter('wake_phrase', '小零小零')
-        self.declare_parameter('wake_aliases', ['小零小零', '小玲小玲', '小灵小灵', '小林小林', '小零', '小玲'])
+        self.declare_string_array_parameter(
+            'wake_aliases',
+            ['小零小零', '小玲小玲', '小灵小灵', '小林小林', '小零', '小玲'],
+        )
         self.declare_parameter('sample_rate', 16000)
         self.declare_parameter('frame_ms', 30)
         self.declare_parameter('energy_threshold', 550)
@@ -69,9 +72,9 @@ class VoiceSessionNode(Node):
         self.declare_parameter('post_event_listen_pause_sec', 3.0)
         self.declare_parameter('ignore_empty_asr_after_event_sec', 6.0)
         self.declare_parameter('sales_followup_timeout_sec', 8.0)
-        self.declare_parameter('single_wake_default', True)
-        self.declare_parameter('sales_followup_words', [])
-        self.declare_parameter('voice_close_words', [])
+        self.declare_parameter('single_wake_default', False)
+        self.declare_string_array_parameter('sales_followup_words')
+        self.declare_string_array_parameter('voice_close_words')
 
         self.enabled = bool(self.get_parameter('enabled').value)
         input_device = str(self.get_parameter('audio_input_device').value)
@@ -199,6 +202,13 @@ class VoiceSessionNode(Node):
         response.success = True
         response.message = '语音模式已开启。'
         return response
+
+    def declare_string_array_parameter(self, name: str, default: List[str] = None) -> None:
+        self.declare_parameter(name, Parameter.Type.STRING_ARRAY)
+        if default is not None and self.get_parameter(name).value is None:
+            self.set_parameters([
+                Parameter(name, Parameter.Type.STRING_ARRAY, list(default)),
+            ])
 
     def stop_callback(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         self.stop_session('语音模式已关闭。', say=True)
@@ -441,12 +451,6 @@ class VoiceSessionNode(Node):
         self.update_followup_window()
         interaction_phase = 'wake_command'
         if self.in_sales_followup and not contains_wake:
-            if not is_sales_followup_text(command, self.followup_policy):
-                self.set_state('SALES_FOLLOWUP')
-                self.get_logger().info(
-                    f'Ignoring non-followup voice text in sales window: {command}'
-                )
-                return
             interaction_phase = 'sales_followup'
             self.last_active_at = time.monotonic()
         elif not self.awakened:

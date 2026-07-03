@@ -41,7 +41,9 @@ retail_task_node:
 
     # 货架识别结果有效期，单位秒。
     # 超过这个时间没有新的 /perception/localized_objects，就认为货架结果过期，不做最终推荐。
-    shelf_snapshot_ttl_sec: 2.0
+    shelf_snapshot_ttl_sec: 15.0
+    vlm_shelf_request_topic: /retail_ai/vlm_shelf_request
+    vlm_checkout_request_topic: /retail_ai/vlm_checkout_request
 
     # DashScope OpenAI 兼容接口地址。中国内地北京地域使用下面这个地址。
     # 如果使用国际/新加坡地域，需要换成 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
@@ -62,9 +64,10 @@ retail_task_node:
     classifier_confidence_threshold: 0.72
     enable_plus_fallback: true
     plus_fallback_confidence_threshold: 0.62
-    sales_reply_min_chars: 90
-    sales_reply_max_chars: 180
+    sales_reply_min_chars: 45
+    sales_reply_max_chars: 70
     voice_requires_confirmation: true
+    general_chat_history_timeout_sec: 35.0
 
     # 普通文本请求超时，单位秒。用于文字意图解析等。
     # 太短容易误判超时；太长会影响比赛 60 秒响应限制。
@@ -124,10 +127,53 @@ retail_display_ui_node:
     start_b1_service_name: /retail_ai/start_b1_task
     task_image_dir: /home/nvidia/ros2_ws/src/ylhb_llm/test_images
     cmd_vel_topic: /cmd_vel
+    zlac_status_topic: /zlac8015d/status
+    chassis_status_max_age_sec: 2.5
+    enable_voice_session: false
+    enable_capture_voice: false
+    enable_tts: false
     initial_system_mode: ready
     fullscreen: true
     display: ":0"
     force_local_display: true
+
+retail_competition_executor_node:
+  ros__parameters:
+    task_event_topic: /retail_ai/task_event
+    task_status_topic: /retail_ai/task_status
+    say_text_topic: /retail_ai/say_text
+    vlm_shelf_request_topic: /retail_ai/vlm_shelf_request
+    vlm_checkout_request_topic: /retail_ai/vlm_checkout_request
+    route_file: /home/nvidia/ros2_ws/maps/routes/retail_competition_route.json
+    competition_safe_mode: true
+    enable_real_arm: false
+    skip_arm_pick_place: true
+    navigation_timeout_sec: 90.0
+    stage_pause_sec: 0.8
+
+vlm_shelf_recognition_node:
+  ros__parameters:
+    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
+    request_topic: /retail_ai/vlm_shelf_request
+    image_topic: /zed/zed_node/rgb/image_rect_color
+    localized_objects_topic: /perception/localized_objects
+    task_status_topic: /retail_ai/task_status
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    vl_model: qwen3.6-plus
+    request_timeout_sec: 12.0
+    max_image_age_sec: 8.0
+
+vlm_checkout_recognition_node:
+  ros__parameters:
+    products_file: /home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml
+    request_topic: /retail_ai/vlm_checkout_request
+    image_topic: /zed/zed_node/rgb/image_rect_color
+    localized_objects_topic: /perception/localized_objects
+    task_status_topic: /retail_ai/task_status
+    dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    vl_model: qwen3.6-plus
+    request_timeout_sec: 12.0
+    max_image_age_sec: 8.0
 
 system_supervisor_node:
   ros__parameters:
@@ -216,7 +262,7 @@ voice_session_node:
     post_event_listen_pause_sec: 3.0
     ignore_empty_asr_after_event_sec: 6.0
     sales_followup_timeout_sec: 8.0
-    single_wake_default: true
+    single_wake_default: false
     voice_close_words: [关闭语音模式, 退出语音模式, 停止语音模式, 关闭语音, 退出语音, 关掉语音, 结束语音, 关机]
     sales_followup_words: [确认, 确定, 就这个, 我要这个, 开始取货, 帮我拿这个, 换一个, 不要这个, 重新推荐, 取消, 取消任务, 不要了, 不用, 不需要, 算了, 结算, 付款, 多少钱, 总价]
 
@@ -309,3 +355,4 @@ voice_output_node:
     tts_segment_max_chars: 70
     preserve_b2_tts_single_request: false
     interrupt_current_playback: true
+    playback_speed: 1.20

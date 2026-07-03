@@ -11,6 +11,17 @@ from std_msgs.msg import String
 from ylhb_interfaces.msg import SayText
 
 
+def chassis_status_is_online(
+    status: str,
+    age_sec: float,
+    max_age_sec: float,
+) -> bool:
+    if not status:
+        return False
+    state = status.split(maxsplit=1)[0]
+    return age_sec <= max_age_sec and state == 'online'
+
+
 def system_mode_qos() -> QoSProfile:
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
@@ -157,8 +168,11 @@ class BasicMotionCommandNode(Node):
         if not self.zlac_status or self.zlac_status_received_at <= 0.0:
             return False
         age = time.monotonic() - self.zlac_status_received_at
-        state = self.zlac_status.split(maxsplit=1)[0]
-        return age <= self.chassis_status_max_age_sec and state == 'online'
+        return chassis_status_is_online(
+            self.zlac_status,
+            age,
+            self.chassis_status_max_age_sec,
+        )
 
     def chassis_status_summary(self) -> Tuple[str, float]:
         if not self.zlac_status or self.zlac_status_received_at <= 0.0:

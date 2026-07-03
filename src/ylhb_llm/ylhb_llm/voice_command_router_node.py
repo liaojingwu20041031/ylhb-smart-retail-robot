@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
@@ -48,21 +49,18 @@ class VoiceCommandRouterNode(Node):
                 'products.yaml',
             ),
         )
-        self.declare_parameter(
-            'motion_aliases',
-            [],
-        )
-        self.declare_parameter('system_commands', [])
-        self.declare_parameter('voice_close_words', [])
-        self.declare_parameter('safety_words', [])
-        self.declare_parameter('cancel_words', [])
-        self.declare_parameter('checkout_words', [])
-        self.declare_parameter('system_feedback_words', [])
-        self.declare_parameter('general_qa_words', [])
-        self.declare_parameter('sales_need_words', [])
-        self.declare_parameter('background_words', [])
-        self.declare_parameter('sales_followup_words', [])
-        self.declare_parameter('incomplete_motion_words', [])
+        self.declare_string_array_parameter('motion_aliases')
+        self.declare_string_array_parameter('system_commands')
+        self.declare_string_array_parameter('voice_close_words')
+        self.declare_string_array_parameter('safety_words')
+        self.declare_string_array_parameter('cancel_words')
+        self.declare_string_array_parameter('checkout_words')
+        self.declare_string_array_parameter('system_feedback_words')
+        self.declare_string_array_parameter('general_qa_words')
+        self.declare_string_array_parameter('sales_need_words')
+        self.declare_string_array_parameter('background_words')
+        self.declare_string_array_parameter('sales_followup_words')
+        self.declare_string_array_parameter('incomplete_motion_words')
         self.declare_parameter('ignore_unknown_voice', True)
 
         self.system_mode = 'ready'
@@ -174,6 +172,7 @@ class VoiceCommandRouterNode(Node):
         if self.system_mode == 'running' and intent.route in (
             'sales',
             'general_qa',
+            'general_chat',
             'checkout',
         ):
             self.say('voice_router', '当前正在执行任务，请等待完成，或说取消任务。', priority=6)
@@ -296,6 +295,13 @@ class VoiceCommandRouterNode(Node):
 
     def string_list_parameter(self, name: str) -> List[str]:
         return [str(value) for value in self.get_parameter(name).value if str(value)]
+
+    def declare_string_array_parameter(self, name: str, default: List[str] = None) -> None:
+        self.declare_parameter(name, Parameter.Type.STRING_ARRAY)
+        if default is not None and self.get_parameter(name).value is None:
+            self.set_parameters([
+                Parameter(name, Parameter.Type.STRING_ARRAY, list(default)),
+            ])
 
     def parse_system_commands(
         self,

@@ -45,7 +45,8 @@ def is_sales_followup_text(text: str, policy: VoiceRoutingPolicy) -> bool:
     normalized = normalize_voice_text(text)
     if not normalized:
         return False
-    return contains_any(normalized, policy.followup_words)
+    del policy
+    return True
 
 
 def classify_voice_intent(
@@ -66,11 +67,16 @@ def classify_voice_intent(
             command, feedback = policy.system_commands[phrase]
             return VoiceIntent('system_command', normalized, feedback, command)
 
-    if interaction_phase == 'sales_followup' and not is_sales_followup_text(normalized, policy):
-        return VoiceIntent('ignore', normalized)
-
     if contains_any(normalized, policy.safety_words):
         return VoiceIntent('global_safety', '停止', '已停止。')
+
+    if contains_any(normalized, policy.checkout_words):
+        return VoiceIntent('checkout', normalized)
+    if contains_any(normalized, policy.cancel_words):
+        return VoiceIntent('global_cancel', normalized, '已取消当前任务。')
+
+    if interaction_phase == 'sales_followup':
+        return VoiceIntent('sales', normalized)
 
     motion_text = normalize_motion_command(normalized, policy.motion_aliases)
     if motion_text:
@@ -79,10 +85,6 @@ def classify_voice_intent(
     if any(word == normalized or word in normalized for word in policy.incomplete_motion_words):
         return VoiceIntent('unsupported_motion', normalized, '请说左转或右转。')
 
-    if contains_any(normalized, policy.checkout_words):
-        return VoiceIntent('checkout', normalized)
-    if contains_any(normalized, policy.cancel_words):
-        return VoiceIntent('global_cancel', normalized, '已取消当前任务。')
     if contains_any(normalized, policy.system_feedback_words):
         return VoiceIntent('system_feedback', normalized)
     if contains_any(normalized, policy.general_qa_words):
@@ -91,9 +93,8 @@ def classify_voice_intent(
         return VoiceIntent('sales', normalized)
     if is_background_or_debug_talk(normalized, policy):
         return VoiceIntent('ignore', normalized)
-    if ignore_unknown_voice:
-        return VoiceIntent('ignore', normalized)
-    return VoiceIntent('sales', normalized)
+    del ignore_unknown_voice
+    return VoiceIntent('general_chat', normalized)
 
 
 def normalize_motion_command(text: str, aliases: Tuple[Tuple[str, str], ...]) -> str:
@@ -108,15 +109,7 @@ def is_close_voice_session(text: str, policy: VoiceRoutingPolicy) -> bool:
 
 
 def is_background_or_debug_talk(text: str, policy: VoiceRoutingPolicy) -> bool:
-    if contains_any(text, policy.background_words):
-        return True
-    if len(text) >= 14 and not (
-        contains_any(text, policy.sales_need_words)
-        or contains_any(text, policy.product_words)
-        or contains_any(text, policy.general_qa_words)
-    ):
-        return True
-    return False
+    return contains_any(text, policy.background_words)
 
 
 def safe_wav_duration_sec(

@@ -411,6 +411,59 @@ UI 顶部状态栏会显示 `B1服务: 就绪/未就绪`。刚启动比赛总控
 ./scripts/run_on_jetson.sh competition fullscreen:=false
 ```
 
+### 任务 C 后台手动播报
+
+比赛现场需要手动触发两段任务 C 展示语音时，直接向统一播报话题
+`/retail_ai/say_text` 发布消息。这两条命令只依赖 `voice_output_node` 和 TTS，
+不依赖 `retail_task_node`、任务 C 状态机、导航、视觉识别或 service。
+
+默认展示商品固定为：
+
+```text
+一袋薯片
+一瓶营养快线
+```
+
+根据 `/home/nvidia/ros2_ws/src/ylhb_llm/config/products.yaml`，当前价格为薯片
+3 元、营养快线 6 元，共 2 件商品、总额 9 元。
+
+第一个后台终端指令模拟“完成结算区内的商品信息识别”：
+
+```bash
+ros2 topic pub --once /retail_ai/say_text ylhb_interfaces/msg/SayText \
+  "{task_id: 'manual_checkout_inspect', priority: 9, interrupt: true, text: '完成结算区内的商品信息识别，结算区域内有一袋薯片和一瓶营养快线。'}"
+```
+
+预期播报：
+
+```text
+完成结算区内的商品信息识别，结算区域内有一袋薯片和一瓶营养快线。
+```
+
+第二个后台终端指令模拟“机器人回到起点区域”：
+
+```bash
+ros2 topic pub --once /retail_ai/say_text ylhb_interfaces/msg/SayText \
+  "{task_id: 'manual_checkout_total', priority: 9, interrupt: true, text: '已回到起点区域，您购买的2件商品总额为9元。'}"
+```
+
+预期播报：
+
+```text
+已回到起点区域，您购买的2件商品总额为9元。
+```
+
+两个指令彼此独立，可以在同一个后台终端依次执行，也可以分别放在两个终端中。
+`interrupt: true` 会终止当前播报并清空等待队列，确保比赛现场立即播放这段语音。
+若命令发布成功但没有声音，检查：
+
+```bash
+ros2 node list | grep voice_output_node
+ros2 topic info /retail_ai/say_text -v
+ros2 param get /voice_output_node enabled
+ros2 param get /voice_output_node tts_enabled
+```
+
 ### 系统控制页
 
 UI 的“系统控制”页通过 `/retail_ai/system_command` 向 `system_supervisor_node` 发送 JSON 命令，supervisor 负责启动/停止外部 launch 进程，并通过 `/retail_ai/system_status` 回传状态。
@@ -1670,7 +1723,7 @@ source /opt/ros/humble/setup.bash
 
 ros2 run teleop_twist_keyboard teleop_twist_keyboard \
   --ros-args \
-  -p speed:=0.08 \
+  -p speed:=0.15 \
   -p turn:=0.25
 ```
 

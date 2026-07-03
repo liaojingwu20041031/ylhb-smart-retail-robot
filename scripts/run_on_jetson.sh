@@ -115,6 +115,35 @@ case "${MODE}" in
       display:="${DISPLAY}" \
       "$@"
     ;;
+  competition_safe)
+    shift || true
+    export DISPLAY="${DISPLAY:-:0}"
+    if [ "${DISPLAY}" = "localhost:10.0" ] || [[ "${DISPLAY}" == localhost:* ]]; then
+      export DISPLAY=":0"
+    fi
+    disable_display_sleep
+    start_chinese_ime
+    exec ros2 launch ylhb_llm llm.launch.py \
+      enable_task_layer:=true \
+      enable_display_ui:=true \
+      enable_system_supervisor:=true \
+      enable_competition_executor:=true \
+      enable_vlm_shelf:=true \
+      enable_vlm_checkout:=true \
+      competition_safe_mode:=true \
+      enable_real_arm:=false \
+      skip_arm_pick_place:=true \
+      enable_voice:=true \
+      enable_voice_session:=true \
+      enable_capture_voice:=false \
+      enable_tts:=true \
+      audio_input_device:=plughw:CARD=Luna,DEV=0 \
+      audio_output_device:=default \
+      tts_voice:=Serena \
+      display:="${DISPLAY}" \
+      route_file:="${WS_DIR}/maps/routes/retail_competition_route.json" \
+      "$@"
+    ;;
   teleop)
     shift || true
     exec ros2 run teleop_twist_keyboard teleop_twist_keyboard "$@"
@@ -131,6 +160,7 @@ Modes:
   perception   Start Jetson YOLO runtime with TensorRT engine
   llm          Start retail AI task layer, image service, and voice I/O nodes
   competition  Start display UI and system supervisor for competition control
+  competition_safe  Start score-safe retail mode with executor, VLM, TTS, and arm skip
   teleop       Start keyboard teleop
 
 Examples:
@@ -141,6 +171,7 @@ Examples:
   $0 llm enable_voice:=false enable_tts:=false
   $0 llm enable_voice:=true enable_tts:=true audio_input_device:=plughw:CARD=Luna,DEV=0 audio_output_device:=plughw:CARD=Luna,DEV=0
   $0 competition fullscreen:=true
+  $0 competition_safe fullscreen:=true
   $0 navigation map:=${WS_DIR}/src/my_map.yaml
 EOF
     ;;

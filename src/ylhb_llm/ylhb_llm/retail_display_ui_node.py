@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ylhb_interfaces.msg import CartState, SayText, TaskEvent, TaskStatus, VoiceStatus
+from .health import HealthInputs, HealthResult, evaluate_health
 
 
 TASK_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
@@ -99,6 +100,7 @@ class UiSignals(QObject):
     b1_result = pyqtSignal(bool, str)
     voice_capture_result = pyqtSignal(bool, str)
     ros_error = pyqtSignal(str)
+    health_status = pyqtSignal(object)
 
 
 class RetailDisplayRosBridge(Node):
@@ -125,6 +127,11 @@ class RetailDisplayRosBridge(Node):
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
         self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('zlac_status_topic', '/zlac8015d/status')
+        self.declare_parameter('chassis_status_max_age_sec', 2.5)
+        self.declare_parameter('enable_voice_session', False)
+        self.declare_parameter('enable_capture_voice', False)
+        self.declare_parameter('enable_tts', False)
         self.declare_parameter('initial_system_mode', 'ready')
         self.declare_parameter('fullscreen', True)
         self.declare_parameter('display', ':0')
@@ -134,6 +141,19 @@ class RetailDisplayRosBridge(Node):
         self.fullscreen = bool(self.get_parameter('fullscreen').value)
         self.display = str(self.get_parameter('display').value)
         self.force_local_display = bool(self.get_parameter('force_local_display').value)
+        self.enable_voice_session = bool(
+            self.get_parameter('enable_voice_session').value)
+        self.enable_capture_voice = bool(
+            self.get_parameter('enable_capture_voice').value)
+        self.enable_tts = bool(self.get_parameter('enable_tts').value)
+        self.chassis_status_max_age_sec = float(
+            self.get_parameter('chassis_status_max_age_sec').value)
+        self.zlac_status = ''
+        self.zlac_status_received_at = 0.0
+        self.last_voice_event_at = 0.0
+        self.tts_speaking = False
+        self.health_ready = False
+        self.current_system_mode = 'sleep'
 
         self.text_pub = self.create_publisher(
             String, self.get_parameter('text_command_topic').value, 10)
@@ -141,6 +161,10 @@ class RetailDisplayRosBridge(Node):
             String, self.get_parameter('system_mode_topic').value, system_mode_qos())
         self.system_command_pub = self.create_publisher(
             String, self.get_parameter('system_command_topic').value, 10)
+        self.task_event_pub = self.create_publisher(
+            TaskEvent, self.get_parameter('task_event_topic').value, 10)
+        self.say_pub = self.create_publisher(
+            SayText, self.get_parameter('say_text_topic').value, 10)
         self.cmd_vel_pub = self.create_publisher(
             Twist, self.get_parameter('cmd_vel_topic').value, 10)
         self.b1_client = self.create_client(
@@ -164,7 +188,7 @@ class RetailDisplayRosBridge(Node):
         self.create_subscription(CartState, self.get_parameter('cart_topic').value,
                                  lambda msg: self.signals.cart.emit(msg), 10)
         self.create_subscription(VoiceStatus, self.get_parameter('voice_status_topic').value,
-                                 lambda msg: self.signals.voice_status.emit(msg), 10)
+                                 self.voice_status_callback, 10)
         self.create_subscription(String, self.get_parameter('voice_session_status_topic').value,
                                  lambda msg: self.signals.voice_session_status.emit(msg), system_mode_qos())
         self.create_subscription(String, self.get_parameter('text_command_topic').value,
@@ -174,21 +198,48 @@ class RetailDisplayRosBridge(Node):
         self.create_subscription(String, self.get_parameter('system_status_topic').value,
                                  lambda msg: self.signals.system_status.emit(msg), 10)
         self.create_subscription(String, self.get_parameter('system_mode_topic').value,
-                                 lambda msg: self.signals.system_mode.emit(msg.data), system_mode_qos())
+                                 self.system_mode_callback, system_mode_qos())
+        self.create_subscription(
+            String,
+            self.get_parameter('zlac_status_topic').value,
+            self.zlac_status_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            self.get_parameter('voice_command_event_topic').value,
+            self.voice_event_callback,
+            10,
+        )
         self.create_timer(1.0, self.check_b1_service)
+        self.create_timer(1.0, self.refresh_health)
 
-        initial_mode = str(self.get_parameter('initial_system_mode').value).strip()
-        if initial_mode not in SYSTEM_MODES:
-            initial_mode = 'ready'
-        self.publish_system_mode(initial_mode)
+        self.desired_initial_mode = str(
+            self.get_parameter('initial_system_mode').value).strip()
+        if self.desired_initial_mode not in SYSTEM_MODES:
+            self.desired_initial_mode = 'ready'
+        self.initial_mode = (
+            'sleep' if self.desired_initial_mode == 'ready'
+            else self.desired_initial_mode
+        )
+        self.publish_system_mode(self.initial_mode)
         self.get_logger().info(
-            f'Retail display UI bridge started. initial_system_mode={initial_mode}'
+            f'Retail display UI bridge started. initial_system_mode={self.initial_mode}, '
+            f'desired_initial_mode={self.desired_initial_mode}'
         )
 
     def publish_text_command(self, text: str) -> None:
         msg = String()
         msg.data = text
         self.text_pub.publish(msg)
+
+    def publish_say_text(self, task_id: str, text: str, priority: int = 5) -> None:
+        msg = SayText()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.task_id = task_id
+        msg.priority = int(priority)
+        msg.text = text
+        self.say_pub.publish(msg)
 
     def publish_system_mode(self, mode: str) -> None:
         if mode not in SYSTEM_MODES:
@@ -197,6 +248,7 @@ class RetailDisplayRosBridge(Node):
         msg = String()
         msg.data = mode
         self.system_mode_pub.publish(msg)
+        self.current_system_mode = mode
 
     def publish_system_command(self, command: str, **kwargs: Any) -> None:
         payload = {'command': command}
@@ -204,6 +256,26 @@ class RetailDisplayRosBridge(Node):
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self.system_command_pub.publish(msg)
+
+    def publish_retail_demo_event(self) -> str:
+        task_id = f'retail_demo_{int(time.time() * 1000)}'
+        msg = TaskEvent()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.task_id = task_id
+        msg.intent = 'retail_demo'
+        msg.destination = 'demo'
+        msg.confidence = 1.0
+        msg.source = 'ui'
+        msg.requires_ack = True
+        msg.raw_json = json.dumps({
+            'schema_version': '1.0',
+            'task_id': task_id,
+            'intent': 'retail_demo',
+            'flow': 'demo',
+            'next_step': 'navigate_shelf_checkout_return_start',
+        }, ensure_ascii=False)
+        self.task_event_pub.publish(msg)
+        return task_id
 
     def publish_zero_velocity(self, repeat: int = 5) -> None:
         twist = Twist()
@@ -213,6 +285,59 @@ class RetailDisplayRosBridge(Node):
 
     def check_b1_service(self) -> None:
         self.b1_service_ready = self.b1_client.service_is_ready()
+
+    def voice_status_callback(self, msg: VoiceStatus) -> None:
+        self.tts_speaking = bool(msg.speaking)
+        self.signals.voice_status.emit(msg)
+
+    def system_mode_callback(self, msg: String) -> None:
+        self.current_system_mode = msg.data.strip()
+        self.signals.system_mode.emit(msg.data)
+
+    def zlac_status_callback(self, msg: String) -> None:
+        self.zlac_status = msg.data.strip()
+        self.zlac_status_received_at = time.monotonic()
+
+    def voice_event_callback(self, _msg: String) -> None:
+        self.last_voice_event_at = time.monotonic()
+
+    def refresh_health(self) -> None:
+        node_names = set(self.get_node_names())
+        required_nodes = {
+            'retail_task_node': 'retail_task_node' in node_names,
+            'basic_motion_command_node': 'basic_motion_command_node' in node_names,
+        }
+        if self.enable_voice_session:
+            required_nodes['voice_command_router_node'] = (
+                'voice_command_router_node' in node_names
+            )
+        health = evaluate_health(HealthInputs(
+            now=time.monotonic(),
+            required_nodes=required_nodes,
+            b1_service_ready=self.b1_service_ready,
+            chassis_status=self.zlac_status,
+            chassis_received_at=self.zlac_status_received_at,
+            chassis_status_max_age_sec=self.chassis_status_max_age_sec,
+            voice_session_enabled=self.enable_voice_session,
+            voice_session_service_ready=self.start_voice_session_client.service_is_ready(),
+            capture_voice_enabled=self.enable_capture_voice,
+            capture_voice_service_ready=self.capture_voice_client.service_is_ready(),
+            tts_enabled=self.enable_tts,
+            voice_output_present='voice_output_node' in node_names,
+            dashscope_api_key_present=bool(os.getenv('DASHSCOPE_API_KEY')),
+            tts_speaking=self.tts_speaking,
+            last_voice_event_at=self.last_voice_event_at,
+        ))
+        was_ready = self.health_ready
+        self.health_ready = health.ready
+        self.signals.health_status.emit(health)
+        if health.ready and not was_ready and self.current_system_mode == 'sleep':
+            if self.desired_initial_mode == 'ready':
+                self.publish_system_mode('ready')
+            return
+        if not health.ready and self.current_system_mode in ('ready', 'running'):
+            self.publish_zero_velocity(repeat=3)
+            self.publish_system_mode('fault')
 
     def call_b1_service(self, wait_timeout_sec: float = 20.0) -> None:
         threading.Thread(
@@ -324,7 +449,7 @@ class RetailDisplayWindow(QWidget):
         self.build_ui()
         self.apply_style()
         self.connect_signals()
-        self.set_mode(str(self.bridge.get_parameter('initial_system_mode').value), publish=False)
+        self.set_mode(self.bridge.initial_mode, publish=False)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.refresh_time_label)
@@ -460,6 +585,20 @@ class RetailDisplayWindow(QWidget):
             mode_layout.addWidget(button, idx // 2, idx % 2)
         layout.addWidget(mode_box)
 
+        safe_box = QGroupBox('比赛保分模式')
+        safe_layout = QVBoxLayout(safe_box)
+        self.configure_layout(safe_layout)
+        self.safe_mode_label = QLabel('safe mode: ON / 视觉模式: 视觉大模型 / 机械臂: 接口预留')
+        self.route_label = QLabel('路线: S -> A -> B -> S')
+        self.stage_label = QLabel('当前阶段: 待命')
+        for label in (self.safe_mode_label, self.route_label, self.stage_label):
+            label.setFrameShape(QFrame.Panel)
+            label.setFrameShadow(QFrame.Sunken)
+            label.setMinimumHeight(24 if self.compact_ui else 28)
+            label.setWordWrap(True)
+            safe_layout.addWidget(label)
+        layout.addWidget(safe_box)
+
         task_a = QGroupBox('任务 A-1 基本运动')
         task_a_layout = QGridLayout(task_a)
         for idx, command in enumerate(('前进', '后退', '左转', '右转', '停止')):
@@ -496,7 +635,7 @@ class RetailDisplayWindow(QWidget):
 
         task_b = QGroupBox('任务 B')
         task_b_layout = QVBoxLayout(task_b)
-        self.b1_button = QPushButton('导入任务书图片 / 开始 B-1')
+        self.b1_button = QPushButton('导入任务书图片 -> 导航到 A -> 识别货架 -> 推荐商品')
         self.b1_button.clicked.connect(self.start_b1)
         task_b_layout.addWidget(self.b1_button)
 
@@ -545,9 +684,12 @@ class RetailDisplayWindow(QWidget):
 
         task_d = QGroupBox('任务 D 创意展示')
         task_d_layout = QVBoxLayout(task_d)
-        self.demo_button = QPushButton('打开智慧零售驾驶舱')
-        self.demo_button.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        self.demo_button = QPushButton('一键创意展示')
+        self.demo_button.clicked.connect(self.start_retail_demo)
+        self.open_cockpit_button = QPushButton('打开智慧零售驾驶舱')
+        self.open_cockpit_button.clicked.connect(lambda: self.tabs.setCurrentIndex(2))
         task_d_layout.addWidget(self.demo_button)
+        task_d_layout.addWidget(self.open_cockpit_button)
         layout.addWidget(task_d)
         layout.addStretch(1)
         return panel
@@ -710,6 +852,7 @@ class RetailDisplayWindow(QWidget):
         self.signals.b1_result.connect(self.on_b1_result)
         self.signals.voice_capture_result.connect(self.on_voice_capture_result)
         self.signals.ros_error.connect(self.show_error)
+        self.signals.health_status.connect(self.on_health_status)
 
     def apply_style(self) -> None:
         font_size = 12 if self.compact_ui else 14
@@ -811,6 +954,9 @@ class RetailDisplayWindow(QWidget):
     def set_mode(self, mode: str, publish: bool = True) -> None:
         if mode not in SYSTEM_MODES:
             return
+        if publish and mode == 'ready' and not self.bridge.health_ready:
+            self.show_error('关键链路尚未健康，不能进入运行准备状态。')
+            return
         self.system_mode = mode
         if mode in ('sleep', 'ready', 'mapping'):
             self.task_phase = 'idle'
@@ -900,6 +1046,8 @@ class RetailDisplayWindow(QWidget):
         if self.system_mode != 'ready':
             self.show_error('当前系统不在运行准备状态，不能发送 B-2 销售对话。')
             return
+        task_id = f'ui_text_{int(time.time() * 1000)}'
+        self.bridge.publish_say_text(task_id, f'收到文字指令：{text}', priority=5)
         self.bridge.publish_text_command(text)
         self.add_timeline(f'B-2 销售对话: {text}')
 
@@ -927,8 +1075,17 @@ class RetailDisplayWindow(QWidget):
             return
         self.task_phase = 'executing'
         self.set_mode('running', publish=True)
+        self.bridge.publish_say_text(f'checkout_{int(time.time() * 1000)}', '收到文字指令：一共多少钱', priority=5)
         self.bridge.publish_text_command('一共多少钱')
         self.add_timeline('C 结算指令: 一共多少钱')
+
+    def start_retail_demo(self) -> None:
+        if not self.confirm_start('确认启动 D', '开始一键创意展示：S -> A -> B -> S？'):
+            return
+        self.task_phase = 'executing'
+        self.set_mode('running', publish=True)
+        task_id = self.bridge.publish_retail_demo_event()
+        self.add_timeline(f'D 创意展示: {task_id}')
 
     def software_stop(self) -> None:
         self.set_mode('fault', publish=True)
@@ -1062,6 +1219,7 @@ class RetailDisplayWindow(QWidget):
             self.set_mode('running', publish=True)
 
     def on_task_status(self, msg: TaskStatus) -> None:
+        self.stage_label.setText(f'当前阶段: {msg.stage or "-"} / {msg.status or "-"}')
         self.add_timeline(
             f'TaskStatus {msg.status}: task={msg.task_id or "-"} stage={msg.stage or "-"} '
             f'reason={msg.reason or "-"}'
@@ -1134,6 +1292,24 @@ class RetailDisplayWindow(QWidget):
         self.voice_label.setText('语音: 播报中' if msg.speaking else '语音: 空闲')
         self.refresh_controls()
         self.touch_update()
+
+    def on_health_status(self, health: HealthResult) -> None:
+        if health.ready:
+            self.ros_label.setText('ROS: 关键链路健康')
+            self.ros_label.setStyleSheet('background: #079455; color: white;')
+        else:
+            reason = health.reasons[0] if health.reasons else '状态未知'
+            self.ros_label.setText(f'ROS: {reason}')
+            self.ros_label.setStyleSheet('background: #d92d20; color: white;')
+        voice_session = health.capabilities.get('voice_session', 'disabled')
+        capture_voice = health.capabilities.get('capture_voice', 'disabled')
+        tts = health.capabilities.get('tts', 'disabled')
+        voice_event = health.capabilities.get('voice_event', 'none')
+        self.voice_label.setText(
+            f'语音: 会话={voice_session} 单次={capture_voice} '
+            f'TTS={tts} 最近事件={voice_event}'
+        )
+        self.refresh_controls()
 
     def on_localized_objects(self, msg: String) -> None:
         try:

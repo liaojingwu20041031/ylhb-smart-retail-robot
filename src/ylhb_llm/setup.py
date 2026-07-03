@@ -31,6 +31,9 @@ setup(
             'voice_output_node = ylhb_llm.voice_output_node:main',
             'retail_display_ui_node = ylhb_llm.retail_display_ui_node:main',
             'system_supervisor_node = ylhb_llm.system_supervisor_node:main',
+            'retail_competition_executor_node = ylhb_llm.retail_competition_executor_node:main',
+            'vlm_shelf_recognition_node = ylhb_llm.vlm_recognition_nodes:main_shelf',
+            'vlm_checkout_recognition_node = ylhb_llm.vlm_recognition_nodes:main_checkout',
         ],
     },
 )

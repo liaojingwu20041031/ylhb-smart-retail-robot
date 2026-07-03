@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "_note": "占位坐标，现场建图后替换。start_pose 表示 S，targets 包含 A/B。",
+  "start_pose": {
+    "frame_id": "map",
+    "x": 0.0,
+    "y": 0.0,
+    "yaw": 0.0
+  },
+  "targets": {
+    "A": {
+      "frame_id": "map",
+      "x": 1.0,
+      "y": 0.0,
+      "yaw": 0.0
+    },
+    "B": {
+      "frame_id": "map",
+      "x": 2.0,
+      "y": 0.0,
+      "yaw": 0.0
+    }
+  },
+  "routes": {
+    "task_b1": ["S", "A", "B", "S"],
+    "task_b2": ["S", "A", "B", "S"],
+    "task_c": ["S", "B", "S"],
+    "demo": ["S", "A", "B", "S"]
+  }
+}

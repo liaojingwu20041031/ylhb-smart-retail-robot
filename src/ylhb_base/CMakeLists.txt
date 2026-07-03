@@ -30,6 +30,7 @@ ament_target_dependencies(base_controller
 
 add_executable(zlac8015d_canopen_controller src/zlac8015d_canopen_controller.cpp)
 target_include_directories(zlac8015d_canopen_controller PRIVATE include)
+target_sources(zlac8015d_canopen_controller PRIVATE src/zlac_status.cpp)
 ament_target_dependencies(zlac8015d_canopen_controller
   rclcpp
   std_msgs
@@ -107,6 +108,9 @@ if(BUILD_TESTING)
   target_include_directories(test_zlac_drive_mapping PRIVATE include)
   target_compile_definitions(test_zlac_drive_mapping PRIVATE
     BASE_KINEMATICS_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/base_kinematics.yaml")
+
+  ament_add_gtest(test_zlac_status test/test_zlac_status.cpp src/zlac_status.cpp)
+  target_include_directories(test_zlac_status PRIVATE include)
 endif()
 
 ament_package()

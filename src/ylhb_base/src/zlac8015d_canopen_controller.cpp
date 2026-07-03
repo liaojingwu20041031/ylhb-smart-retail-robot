@@ -29,6 +29,7 @@
 #include <utility>
 
 #include "ylhb_base/zlac_drive_mapping.hpp"
+#include "ylhb_base/zlac_status.hpp"
 
 using namespace std::chrono_literals;
 using ylhb_base::ChannelFaults;
@@ -36,6 +37,8 @@ using ylhb_base::ChannelRpm;
 using ylhb_base::DifferentialDriveKinematics;
 using ylhb_base::LogicalWheelRpm;
 using ylhb_base::ZlacChannelMapping;
+using ylhb_base::zlac_should_warn_cmd_timeout;
+using ylhb_base::zlac_status_state;
 
 namespace
 {
@@ -548,6 +551,9 @@ private:
     declare_parameter<double>("fault_check_rate_hz", 2.0);
     declare_parameter<double>("can_poll_rate_hz", 200.0);
     declare_parameter<double>("status_rate_hz", 1.0);
+    declare_parameter<bool>("require_heartbeat", false);
+    declare_parameter<double>("feedback_timeout_sec", 1.0);
+    declare_parameter<double>("heartbeat_timeout_sec", 2.0);
     declare_parameter<double>("cmd_timeout_sec", 0.5);
     declare_parameter<int>("sdo_timeout_ms", 200);
     declare_parameter<double>("target_velocity_unit_per_rpm", 1.0);
@@ -604,6 +610,9 @@ private:
     get_parameter("fault_check_rate_hz", fault_check_rate_hz_);
     get_parameter("can_poll_rate_hz", can_poll_rate_hz_);
     get_parameter("status_rate_hz", status_rate_hz_);
+    get_parameter("require_heartbeat", require_heartbeat_);
+    get_parameter("feedback_timeout_sec", feedback_timeout_sec_);
+    get_parameter("heartbeat_timeout_sec", heartbeat_timeout_sec_);
     get_parameter("cmd_timeout_sec", cmd_timeout_sec_);
     get_parameter("sdo_timeout_ms", sdo_timeout_ms_);
     get_parameter("target_velocity_unit_per_rpm", target_velocity_unit_per_rpm_);
@@ -666,7 +675,9 @@ private:
   void cmd_vel_callback(const geometry_msgs::msg::Twist::SharedPtr msg)
   {
     last_cmd_time_ = now();
-    timed_out_ = false;
+    motion_command_active_ =
+      std::abs(msg->linear.x) > 1e-6 || std::abs(msg->angular.z) > 1e-6;
+    timed_out_ = !motion_command_active_;
     if (!online_) {
       return;
     }
@@ -736,10 +747,13 @@ private:
     }
     const double age = (now() - last_cmd_time_).seconds();
     if (age > cmd_timeout_sec_) {
-      if (!timed_out_) {
+      if (zlac_should_warn_cmd_timeout(
+          motion_command_active_, timed_out_, age, cmd_timeout_sec_))
+      {
         RCLCPP_WARN(get_logger(), "/cmd_vel timeout %.3fs; sending zero target velocity", age);
-        timed_out_ = true;
       }
+      timed_out_ = true;
+      motion_command_active_ = false;
       client_->write_target_velocity(0.0, 0.0);
     }
   }
@@ -788,25 +802,19 @@ private:
   void publish_status()
   {
     const auto stamp = now();
-    std::string state = "offline";
     double heartbeat_age = -1.0;
     double feedback_age = -1.0;
-
-    if (online_) {
-      if (last_heartbeat_time_.nanoseconds() == 0) {
-        state = "stale/offline";
-      } else {
-        heartbeat_age = (stamp - last_heartbeat_time_).seconds();
-        if (heartbeat_age > 2.0) {
-          state = "stale/offline";
-        } else if (last_feedback_time_.nanoseconds() == 0) {
-          state = "feedback_timeout";
-        } else {
-          feedback_age = (stamp - last_feedback_time_).seconds();
-          state = feedback_age > 1.0 ? "feedback_timeout" : "online";
-        }
-      }
+    const bool heartbeat_seen = last_heartbeat_time_.nanoseconds() != 0;
+    const bool feedback_seen = last_feedback_time_.nanoseconds() != 0;
+    if (heartbeat_seen) {
+      heartbeat_age = (stamp - last_heartbeat_time_).seconds();
     }
+    if (feedback_seen) {
+      feedback_age = (stamp - last_feedback_time_).seconds();
+    }
+    const std::string state = zlac_status_state(
+      online_, feedback_seen, feedback_age, heartbeat_seen, heartbeat_age,
+      require_heartbeat_, feedback_timeout_sec_, heartbeat_timeout_sec_);
 
     std::ostringstream msg;
     msg << state << " heartbeat_seen=" << (last_heartbeat_time_.nanoseconds() == 0 ? "false" : "true")
@@ -817,6 +825,7 @@ private:
         << std::dec << " left_rpm=" << left_actual_rpm_ << " right_rpm=" << right_actual_rpm_
         << " low_channel_rpm=" << low_channel_actual_rpm_
         << " high_channel_rpm=" << high_channel_actual_rpm_
+        << " require_heartbeat=" << (require_heartbeat_ ? "true" : "false")
         << " timed_out=" << (timed_out_ ? "true" : "false");
     std_msgs::msg::String out;
     out.data = msg.str();
@@ -843,6 +852,9 @@ private:
   double fault_check_rate_hz_ = 2.0;
   double can_poll_rate_hz_ = 200.0;
   double status_rate_hz_ = 1.0;
+  bool require_heartbeat_ = false;
+  double feedback_timeout_sec_ = 1.0;
+  double heartbeat_timeout_sec_ = 2.0;
   double cmd_timeout_sec_ = 0.5;
   int sdo_timeout_ms_ = 200;
   double target_velocity_unit_per_rpm_ = 1.0;
@@ -853,6 +865,7 @@ private:
 
   bool online_ = false;
   bool timed_out_ = false;
+  bool motion_command_active_ = false;
   double left_actual_rpm_ = 0.0;
   double right_actual_rpm_ = 0.0;
   double low_channel_actual_rpm_ = 0.0;

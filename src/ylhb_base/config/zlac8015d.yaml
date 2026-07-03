@@ -18,6 +18,11 @@ zlac8015d_canopen_controller:
     sdo_timeout_ms: 200
     # 底盘状态日志输出频率，单位：Hz。
     status_rate_hz: 1.0
+    # 默认以速度反馈判定在线；heartbeat 仅用于诊断。
+    require_heartbeat: false
+    # 实际速度反馈和 heartbeat 的新鲜度阈值，单位：秒。
+    feedback_timeout_sec: 1.0
+    heartbeat_timeout_sec: 2.0
     # 启动时是否自动清除驱动器故障。调试故障原因时建议保持 false。
     fault_reset_on_start: false
     # 节点退出时是否发送停车命令，通常保持 true。

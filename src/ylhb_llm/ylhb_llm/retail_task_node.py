@@ -22,6 +22,19 @@ WEAK_CONFIRM_WORDS = ('是', '对', '好', '可以', '嗯')
 NEGATIVE_WORDS = ('不需要', '不用', '不要', '算了')
 MODIFY_WORDS = ('换一个', '不对', '不要这个', '重新推荐')
 GENERIC_CATEGORY_WORDS = ('零食', '饮料', '水果', '生活用品', '日用品', '吃的', '喝的')
+B1_NEED_RECOMMENDATION_PRODUCT_IDS = {
+    'hungry': 'chips',
+    'snack': 'chips',
+    'thirsty': 'water_nongfu',
+    'drink': 'water_nongfu',
+    'energy': 'redbull',
+    'sleepy': 'coffee_nestle',
+    'tissue': 'tissue_vinda',
+    'clean': 'tissue_vinda',
+    'hygiene': 'toothpaste',
+    'nutrition': 'milk_pure',
+    'fruit': 'orange',
+}
 REJECT_RECOMMENDATION_WORDS = (
     '我没有说',
     '我没说',
@@ -65,7 +78,9 @@ class RetailTaskNode(Node):
         self.declare_parameter('start_b1_service_name', '/retail_ai/start_b1_task')
         self.declare_parameter('task_image_dir', workspace_path('src', 'ylhb_llm', 'test_images'))
         self.declare_parameter('system_mode_topic', '/retail_ai/system_mode')
-        self.declare_parameter('shelf_snapshot_ttl_sec', 2.0)
+        self.declare_parameter('shelf_snapshot_ttl_sec', 15.0)
+        self.declare_parameter('vlm_shelf_request_topic', '/retail_ai/vlm_shelf_request')
+        self.declare_parameter('vlm_checkout_request_topic', '/retail_ai/vlm_checkout_request')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.declare_parameter('vl_model', 'Qwen3-VL-235B-A22B-Thinking')
         self.declare_parameter('chat_model', 'qwen-max')
@@ -78,9 +93,10 @@ class RetailTaskNode(Node):
         self.declare_parameter('classifier_confidence_threshold', 0.72)
         self.declare_parameter('enable_plus_fallback', True)
         self.declare_parameter('plus_fallback_confidence_threshold', 0.62)
-        self.declare_parameter('sales_reply_min_chars', 90)
-        self.declare_parameter('sales_reply_max_chars', 180)
+        self.declare_parameter('sales_reply_min_chars', 45)
+        self.declare_parameter('sales_reply_max_chars', 70)
         self.declare_parameter('voice_requires_confirmation', True)
+        self.declare_parameter('general_chat_history_timeout_sec', 35.0)
 
         products_file = self.get_parameter('products_file').value
         self.catalog = ProductCatalog.from_yaml(products_file)
@@ -99,6 +115,8 @@ class RetailTaskNode(Node):
         self.sales_reply_min_chars = int(self.get_parameter('sales_reply_min_chars').value)
         self.sales_reply_max_chars = int(self.get_parameter('sales_reply_max_chars').value)
         self.voice_requires_confirmation = bool(self.get_parameter('voice_requires_confirmation').value)
+        self.general_chat_history_timeout_sec = float(
+            self.get_parameter('general_chat_history_timeout_sec').value)
         self.qwen = QwenClient(self.get_parameter('dashscope_base_url').value)
         self.task_image_dir = os.path.expanduser(str(self.get_parameter('task_image_dir').value))
         self.system_mode = 'ready'
@@ -112,6 +130,8 @@ class RetailTaskNode(Node):
         self.executed_task_request_ids = set()
         self.cart_items: Dict[str, Dict[str, Any]] = {}
         self.sales_dialogue: Dict[str, Any] = self.default_sales_dialogue()
+        self.general_chat_history: Dict[str, List[Dict[str, str]]] = {}
+        self.general_chat_updated_at: Dict[str, float] = {}
 
         self.task_event_pub = self.create_publisher(
             TaskEvent, self.get_parameter('task_event_topic').value, 10)
@@ -121,6 +141,10 @@ class RetailTaskNode(Node):
             String, self.get_parameter('sales_dialogue_status_topic').value, system_mode_qos())
         self.cart_pub = self.create_publisher(
             CartState, self.get_parameter('cart_topic').value, 10)
+        self.vlm_shelf_request_pub = self.create_publisher(
+            String, self.get_parameter('vlm_shelf_request_topic').value, 10)
+        self.vlm_checkout_request_pub = self.create_publisher(
+            String, self.get_parameter('vlm_checkout_request_topic').value, 10)
 
         self.create_subscription(
             String,
@@ -214,7 +238,7 @@ class RetailTaskNode(Node):
                 timeout_sec=self.vision_timeout_sec,
                 product_names=self.catalog.names(),
             )
-            description = str(intent.get('description_cn') or '我已经理解了任务书图片。')
+            description = self.build_b1_image_speech(intent)
         except QwenClientError as exc:
             response.success = False
             response.message = json.dumps({
@@ -267,6 +291,24 @@ class RetailTaskNode(Node):
             return '', '目录内存在多张图片，请只保留一张 jpg/jpeg/png 任务书图片。'
         return candidates[0], ''
 
+    def build_b1_image_speech(self, intent: Dict[str, Any]) -> str:
+        description = str(intent.get('description_cn') or '我已经理解了任务书图片。').strip()
+        return description
+
+    def preliminary_b1_recommendation_product(self, intent: Dict[str, Any]) -> Optional[Product]:
+        preferred = [str(v) for v in intent.get('preferred_categories', []) if v]
+        preferred_text = ' '.join(preferred)
+        if preferred_text:
+            product = self.catalog.match_text(preferred_text)
+            if product is not None:
+                return product
+
+        need = str(intent.get('need') or '').strip().lower()
+        product_id = B1_NEED_RECOMMENDATION_PRODUCT_IDS.get(need, '')
+        if product_id:
+            return self.catalog.get(product_id)
+        return None
+
     def text_command_callback(self, msg: String) -> None:
         text, command_meta = self.parse_text_command_message(msg.data)
         if not text:
@@ -281,6 +323,7 @@ class RetailTaskNode(Node):
         if source == 'voice' and route not in (
             'sales',
             'general_qa',
+            'general_chat',
             'checkout',
             'global_cancel',
             'system_feedback',
@@ -299,6 +342,10 @@ class RetailTaskNode(Node):
                 '我已经收到您的语音，但当前扬声器可能没有成功播放。请检查音频输出设备是否被占用，或切换到默认输出设备。',
                 priority=8,
             )
+            return
+
+        if route == 'general_chat':
+            self.handle_general_chat(task_id, text, command_meta)
             return
 
         if intent == 'motion':
@@ -405,6 +452,64 @@ class RetailTaskNode(Node):
             self.handle_sales_fallback(task_id, text, command_meta)
             return
         self.handle_sales_decision(task_id, text, decision, command_meta)
+
+    def handle_general_chat(
+        self,
+        task_id: str,
+        text: str,
+        command_meta: Dict[str, Any],
+    ) -> None:
+        if not self.qwen.available():
+            self.say(task_id, '当前没有配置云端对话 API Key，暂时无法闲聊。', priority=6)
+            return
+        session_id = str(command_meta.get('session_id') or 'default')
+        now = time.time()
+        self.cleanup_general_chat_history(now)
+        history = list(self.general_chat_history.get(session_id, []))[-12:]
+        messages: List[Dict[str, str]] = [
+            {
+                'role': 'system',
+                'content': (
+                    '你是智慧零售机器人小零。请用简短自然的中文回答闲聊，'
+                    '最多两句话。不要下发购物、运动或系统控制动作；'
+                    '如果用户要买东西、结算或控制机器人，只做简短提示。'
+                ),
+            },
+            *history,
+            {'role': 'user', 'content': text},
+        ]
+        try:
+            reply = self.qwen.chat_completion(
+                model=self.chat_model,
+                messages=messages,
+                timeout_sec=self.request_timeout_sec,
+                temperature=0.4,
+                extra_body={'enable_thinking': False},
+            ).strip()
+        except QwenClientError as exc:
+            self.get_logger().warn(f'General chat failed: {exc}')
+            self.say(task_id, '云端闲聊暂时不可用，请稍后再试。', priority=6)
+            return
+        if not reply:
+            reply = '我在，您可以继续说。'
+        reply = reply[:120]
+        history.extend([
+            {'role': 'user', 'content': text},
+            {'role': 'assistant', 'content': reply},
+        ])
+        self.general_chat_history[session_id] = history[-12:]
+        self.general_chat_updated_at[session_id] = now
+        self.say(task_id, reply, priority=6)
+
+    def cleanup_general_chat_history(self, now: float) -> None:
+        expired = [
+            session_id
+            for session_id, updated_at in self.general_chat_updated_at.items()
+            if now - updated_at > self.general_chat_history_timeout_sec
+        ]
+        for session_id in expired:
+            self.general_chat_updated_at.pop(session_id, None)
+            self.general_chat_history.pop(session_id, None)
 
     def parse_text_command_message(self, data: str) -> Tuple[str, Dict[str, Any]]:
         raw = data.strip()
@@ -694,6 +799,13 @@ class RetailTaskNode(Node):
         )
         if self.is_confirm_text(normalized) or contextual_confirm:
             ops.append({'op': 'confirm_pending_product', 'reason_cn': '本地精确确认词。'})
+        mentioned_product = self.catalog.match_text(normalized)
+        if mentioned_product is not None:
+            ops.append({
+                'op': 'select_mentioned_product',
+                'product_id': mentioned_product.id,
+                'reason_cn': '本地命中用户提到的具体商品。',
+            })
         if props['is_negation'] or props['is_correction']:
             ops.append({'op': 'reject_pending_product', 'reason_cn': '本地检测到否定或纠正。'})
         constraints = self.constraints_from_text(normalized)
@@ -1085,19 +1197,11 @@ class RetailTaskNode(Node):
         alternatives: List[Product],
         reason: str,
     ) -> str:
-        alt_text = ''
-        if alternatives:
-            alt_names = '、'.join(p.name for p in alternatives[:2])
-            alt_text = f'如果想换一种，也可以考虑{alt_names}。'
-        if need_text in ('已经明确说出了商品', 'explicit_product'):
-            prefix = f'好的，我已经帮您选中{product.name}。'
-        else:
-            prefix = f'我理解您现在{need_text}，我先为您推荐{product.name}。'
+        del need_text, alternatives
+        concise_reason = reason.strip().strip('，。；;')
         reply = (
-            f'{prefix}'
-            f'因为{reason}。'
-            f'{alt_text}'
-            f'需要{product.name}的话，请说“确认”；想换商品请说“换一个”。'
+            f'推荐{product.name}，{concise_reason}。'
+            '确认请说确认，换商品请直接说商品名。'
         )
         return self.polish_sales_reply_length(reply)
 
@@ -1114,7 +1218,7 @@ class RetailTaskNode(Node):
             for old, new in replacements:
                 reply = reply.replace(old, new)
         if len(reply) > self.sales_reply_max_chars:
-            confirm = ' 请说“确认”开始取货，或说“换一个”。'
+            confirm = '。确认请说确认，换商品请直接说商品名。'
             reply = reply[: max(0, self.sales_reply_max_chars - len(confirm))].rstrip('，。；; ')
             reply += confirm
         return reply
@@ -1403,7 +1507,7 @@ class RetailTaskNode(Node):
 
     def semantic_reply(self, patch: Dict[str, Any]) -> str:
         response_plan = patch.get('response_plan') if isinstance(patch.get('response_plan'), dict) else {}
-        return str(response_plan.get('reply_cn') or '').strip()
+        return self.polish_sales_reply_length(str(response_plan.get('reply_cn') or '').strip())
 
     def semantic_task_request_id(self, command_meta: Dict[str, Any], product_id: str) -> str:
         session_id = str(command_meta.get('session_id') or 'voice')
@@ -1765,6 +1869,8 @@ class RetailTaskNode(Node):
                 self.handle_shelf_inspection_succeeded(task_id, context)
             elif context and context.get('workflow') == 'task_c_checkout':
                 self.handle_checkout_status_succeeded(task_id, msg.stage, context)
+            elif context and product is not None and msg.stage in ('shelf_recognition', 'inspect_shelf'):
+                self.handle_b2_shelf_recognition_succeeded(task_id, product)
             elif product is not None:
                 self.add_to_cart_once(task_id, product)
                 self.publish_cart()
@@ -1775,6 +1881,16 @@ class RetailTaskNode(Node):
             reason = msg.reason or '任务执行失败'
             self.say(task_id, reason, priority=8)
             self.pending_tasks.pop(task_id, None)
+
+    def handle_b2_shelf_recognition_succeeded(self, task_id: str, product: Product) -> None:
+        if time.monotonic() - self.shelf_updated_at > self.shelf_snapshot_ttl_sec:
+            self.say(task_id, '货架识别结果已过期，保分模式先跳过真实抓取。', priority=7)
+            return
+        shelf_ids = {item.id for item, _obj in self.shelf_products}
+        if product.id in shelf_ids:
+            self.say(task_id, f'货架已识别到目标商品{product.name}，保分模式跳过真实抓取。', priority=6)
+            return
+        self.say(task_id, f'货架未识别到目标商品{product.name}，保分模式不执行真实抓取。', priority=7)
 
     def handle_checkout(self, task_id: str) -> None:
         payload = {
@@ -1843,12 +1959,19 @@ class RetailTaskNode(Node):
         })
         self.pending_tasks[task_id] = context
         self.task_event_pub.publish(msg)
+        if intent == 'inspect_shelf_for_recommendation':
+            self.publish_vlm_shelf_request(task_id, 'b1_waiting_for_shelf')
+        elif intent == 'pick_item':
+            self.publish_vlm_shelf_request(task_id, 'b2_confirm_target_on_shelf')
+        elif intent == 'checkout':
+            self.publish_vlm_checkout_request(task_id, 'checkout_waiting_for_items')
 
     def handle_shelf_inspection_succeeded(self, task_id: str, context: Dict[str, Any]) -> None:
         intent = dict(context.get('raw', {}).get('image_intent') or {})
         product, reason = self.choose_product_from_shelf(intent)
         if product is None:
-            self.say(task_id, '当前货架识别结果已过期或没有匹配商品，请重新对准货架。', priority=7)
+            self.say(task_id, '当前货架识别结果为空或已过期，请重新对准货架后再试。', priority=7)
+            self.pending_tasks.pop(task_id, None)
             return
         payload = dict(context.get('raw') or {})
         payload.update({
@@ -1897,6 +2020,7 @@ class RetailTaskNode(Node):
             return {}
         items: Dict[str, Dict[str, Any]] = {}
         for product, obj in self.latest_detected_products:
+            quantity = self.safe_quantity(obj.get('quantity'), 1)
             if product.id not in items:
                 items[product.id] = {
                     'item_id': product.id,
@@ -1907,9 +2031,32 @@ class RetailTaskNode(Node):
                     'source_task_ids': [],
                     'detections': [],
                 }
-            items[product.id]['quantity'] += 1
+            items[product.id]['quantity'] += quantity
             items[product.id]['detections'].append(obj)
         return items
+
+    def safe_quantity(self, value: Any, default: int = 1) -> int:
+        try:
+            quantity = int(value)
+        except (TypeError, ValueError):
+            quantity = default
+        return max(1, quantity)
+
+    def publish_vlm_shelf_request(self, task_id: str, reason: str) -> None:
+        self.publish_vlm_request(self.vlm_shelf_request_pub, task_id, reason)
+
+    def publish_vlm_checkout_request(self, task_id: str, reason: str) -> None:
+        self.publish_vlm_request(self.vlm_checkout_request_pub, task_id, reason)
+
+    def publish_vlm_request(self, publisher: Any, task_id: str, reason: str) -> None:
+        msg = String()
+        msg.data = json.dumps({
+            'schema_version': '1.0',
+            'task_id': task_id,
+            'timestamp': time.time(),
+            'reason': reason,
+        }, ensure_ascii=False)
+        publisher.publish(msg)
 
     def publish_cart_from_items(self, items: Dict[str, Dict[str, Any]]) -> None:
         self.cart_items = {

@@ -48,6 +48,8 @@ def generate_launch_description():
     skip_arm_pick_place = LaunchConfiguration('skip_arm_pick_place')
     route_file = LaunchConfiguration('route_file')
     task_image_dir = LaunchConfiguration('task_image_dir')
+    shelf_image_path = LaunchConfiguration('shelf_image_path')
+    checkout_image_path = LaunchConfiguration('checkout_image_path')
     initial_system_mode = LaunchConfiguration('initial_system_mode')
     fullscreen = LaunchConfiguration('fullscreen')
     display = LaunchConfiguration('display')
@@ -84,6 +86,8 @@ def generate_launch_description():
         DeclareLaunchArgument('skip_arm_pick_place', default_value='true'),
         DeclareLaunchArgument('route_file', default_value=default_route_file),
         DeclareLaunchArgument('task_image_dir', default_value=default_task_image_dir),
+        DeclareLaunchArgument('shelf_image_path', default_value=''),
+        DeclareLaunchArgument('checkout_image_path', default_value=''),
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
@@ -138,6 +142,7 @@ def generate_launch_description():
                     'products_file': products_file,
                     'dashscope_base_url': dashscope_base_url,
                     'vl_model': vl_model,
+                    'shelf_image_path': shelf_image_path,
                 },
             ],
         ),
@@ -153,6 +158,7 @@ def generate_launch_description():
                     'products_file': products_file,
                     'dashscope_base_url': dashscope_base_url,
                     'vl_model': vl_model,
+                    'checkout_image_path': checkout_image_path,
                 },
             ],
         ),

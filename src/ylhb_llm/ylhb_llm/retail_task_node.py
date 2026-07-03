@@ -123,6 +123,10 @@ class RetailTaskNode(Node):
 
         self.shelf_products: List[Tuple[Product, Dict[str, Any]]] = []
         self.latest_detected_products: List[Tuple[Product, Dict[str, Any]]] = []
+        self.shelf_products_by_task: Dict[str, List[Tuple[Product, Dict[str, Any]]]] = {}
+        self.checkout_products_by_task: Dict[str, List[Tuple[Product, Dict[str, Any]]]] = {}
+        self.shelf_updated_at_by_task: Dict[str, float] = {}
+        self.checkout_updated_at_by_task: Dict[str, float] = {}
         self.shelf_updated_at = 0.0
         self.latest_detected_updated_at = 0.0
         self.pending_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1850,31 +1854,42 @@ class RetailTaskNode(Node):
             product = self.catalog.match_text(text)
             if product is not None:
                 matches.append((product, obj))
+        task_id = str(payload.get('task_id') or '')
+        source = str(payload.get('source') or '')
+        now = time.monotonic()
         self.latest_detected_products = matches
-        self.latest_detected_updated_at = time.monotonic()
-        if matches:
-            self.shelf_products = self.dedupe_shelf(matches)
-            self.shelf_updated_at = time.monotonic()
+        self.latest_detected_updated_at = now
+        if source == 'vlm_checkout_recognition_node':
+            self.checkout_products_by_task[task_id] = matches
+            self.checkout_updated_at_by_task[task_id] = now
+        else:
+            shelf_products = self.dedupe_shelf(matches)
+            self.shelf_products = shelf_products
+            self.shelf_updated_at = now
+            self.shelf_products_by_task[task_id] = shelf_products
+            self.shelf_updated_at_by_task[task_id] = now
 
     def task_status_callback(self, msg: TaskStatus) -> None:
         task_id = msg.task_id
         status = msg.status
+        stage = msg.stage or ''
         context = self.pending_tasks.get(task_id)
         product = context.get('product') if context else None
         if status == 'started':
             if not context or context.get('workflow') not in ('task_a_motion',):
                 self.say(task_id, '已开始执行任务。', priority=3)
         elif status == 'succeeded':
-            if context and context.get('workflow') == 'task_b_1_recommend':
+            if context and context.get('workflow') == 'task_b_1_recommend' and stage in ('shelf_recognition', 'inspect_shelf'):
                 self.handle_shelf_inspection_succeeded(task_id, context)
             elif context and context.get('workflow') == 'task_c_checkout':
-                self.handle_checkout_status_succeeded(task_id, msg.stage, context)
-            elif context and product is not None and msg.stage in ('shelf_recognition', 'inspect_shelf'):
+                self.handle_checkout_status_succeeded(task_id, stage, context)
+            elif context and product is not None and stage in ('shelf_recognition', 'inspect_shelf'):
                 self.handle_b2_shelf_recognition_succeeded(task_id, product)
-            elif product is not None:
+            elif product is not None and stage in ('arm_place', 'navigate_b_done_safe'):
                 self.add_to_cart_once(task_id, product)
                 self.publish_cart()
                 self.say(task_id, f'{product.name}已放入结算区。', priority=6)
+            elif product is not None and stage in ('return_start', 'workflow_completed'):
                 self.completed_task_ids.add(task_id)
                 self.pending_tasks.pop(task_id, None)
         elif status in ('failed', 'rejected'):
@@ -1883,10 +1898,11 @@ class RetailTaskNode(Node):
             self.pending_tasks.pop(task_id, None)
 
     def handle_b2_shelf_recognition_succeeded(self, task_id: str, product: Product) -> None:
-        if time.monotonic() - self.shelf_updated_at > self.shelf_snapshot_ttl_sec:
+        shelf_products = self.shelf_products_for_task(task_id)
+        if not shelf_products:
             self.say(task_id, '货架识别结果已过期，保分模式先跳过真实抓取。', priority=7)
             return
-        shelf_ids = {item.id for item, _obj in self.shelf_products}
+        shelf_ids = {item.id for item, _obj in shelf_products}
         if product.id in shelf_ids:
             self.say(task_id, f'货架已识别到目标商品{product.name}，保分模式跳过真实抓取。', priority=6)
             return
@@ -1904,14 +1920,15 @@ class RetailTaskNode(Node):
         }
         self.publish_task_event(task_id, 'checkout', None, 'checkout', 'checkout', 1.0, payload)
 
-    def choose_product_from_shelf(self, intent: Dict[str, Any]) -> Tuple[Optional[Product], str]:
-        if time.monotonic() - self.shelf_updated_at > self.shelf_snapshot_ttl_sec:
+    def choose_product_from_shelf(self, intent: Dict[str, Any], task_id: str = '') -> Tuple[Optional[Product], str]:
+        shelf_products = self.shelf_products_for_task(task_id)
+        if not shelf_products:
             return None, 'shelf snapshot expired'
         need = str(intent.get('need') or '')
         preferred = [str(v) for v in intent.get('preferred_categories', []) if v]
         best: Optional[Product] = None
         best_score = -1.0
-        for product, _obj in self.shelf_products:
+        for product, _obj in shelf_products:
             score = self.catalog.score_for_need(product, need, preferred)
             if score > best_score:
                 best = product
@@ -1959,16 +1976,10 @@ class RetailTaskNode(Node):
         })
         self.pending_tasks[task_id] = context
         self.task_event_pub.publish(msg)
-        if intent == 'inspect_shelf_for_recommendation':
-            self.publish_vlm_shelf_request(task_id, 'b1_waiting_for_shelf')
-        elif intent == 'pick_item':
-            self.publish_vlm_shelf_request(task_id, 'b2_confirm_target_on_shelf')
-        elif intent == 'checkout':
-            self.publish_vlm_checkout_request(task_id, 'checkout_waiting_for_items')
 
     def handle_shelf_inspection_succeeded(self, task_id: str, context: Dict[str, Any]) -> None:
         intent = dict(context.get('raw', {}).get('image_intent') or {})
-        product, reason = self.choose_product_from_shelf(intent)
+        product, reason = self.choose_product_from_shelf(intent, task_id)
         if product is None:
             self.say(task_id, '当前货架识别结果为空或已过期，请重新对准货架后再试。', priority=7)
             self.pending_tasks.pop(task_id, None)
@@ -1991,8 +2002,8 @@ class RetailTaskNode(Node):
         context: Dict[str, Any],
     ) -> None:
         stage = stage or ''
-        if stage in ('checkout_inspect', 'inspect_checkout', 'recognize_checkout', 'navigate_to_checkout', 'checkout'):
-            items = self.checkout_items_from_latest_detection()
+        if stage in ('checkout_inspect', 'recognize_checkout'):
+            items = self.checkout_items_from_latest_detection(task_id)
             context['checkout_items'] = items
             self.publish_cart_from_items(items)
             if not items:
@@ -2015,11 +2026,15 @@ class RetailTaskNode(Node):
             self.completed_task_ids.add(task_id)
             self.pending_tasks.pop(task_id, None)
 
-    def checkout_items_from_latest_detection(self) -> Dict[str, Dict[str, Any]]:
-        if time.monotonic() - self.latest_detected_updated_at > self.shelf_snapshot_ttl_sec:
+    def checkout_items_from_latest_detection(self, task_id: str = '') -> Dict[str, Dict[str, Any]]:
+        products_by_task = getattr(self, 'checkout_products_by_task', {})
+        updated_by_task = getattr(self, 'checkout_updated_at_by_task', {})
+        products = products_by_task.get(task_id, self.latest_detected_products)
+        updated_at = updated_by_task.get(task_id, self.latest_detected_updated_at)
+        if time.monotonic() - updated_at > self.shelf_snapshot_ttl_sec:
             return {}
         items: Dict[str, Dict[str, Any]] = {}
-        for product, obj in self.latest_detected_products:
+        for product, obj in products:
             quantity = self.safe_quantity(obj.get('quantity'), 1)
             if product.id not in items:
                 items[product.id] = {
@@ -2034,6 +2049,15 @@ class RetailTaskNode(Node):
             items[product.id]['quantity'] += quantity
             items[product.id]['detections'].append(obj)
         return items
+
+    def shelf_products_for_task(self, task_id: str = '') -> List[Tuple[Product, Dict[str, Any]]]:
+        products_by_task = getattr(self, 'shelf_products_by_task', {})
+        updated_by_task = getattr(self, 'shelf_updated_at_by_task', {})
+        products = products_by_task.get(task_id, self.shelf_products)
+        updated_at = updated_by_task.get(task_id, self.shelf_updated_at)
+        if time.monotonic() - updated_at > self.shelf_snapshot_ttl_sec:
+            return []
+        return products
 
     def safe_quantity(self, value: Any, default: int = 1) -> int:
         try:

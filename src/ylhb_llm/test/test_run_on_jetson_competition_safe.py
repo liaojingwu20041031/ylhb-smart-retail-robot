@@ -24,6 +24,24 @@ class RunOnJetsonCompetitionSafeTest(unittest.TestCase):
         ):
             self.assertIn(required, script)
 
+    def test_competition_mode_is_safe_stack_entrypoint(self):
+        script_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', '..', 'scripts', 'run_on_jetson.sh')
+        )
+        with open(script_path, 'r', encoding='utf-8') as handle:
+            script = handle.read()
+
+        competition_branch = script.split('competition)', 1)[1].split(';;', 1)[0]
+        for required in (
+            'enable_competition_executor:=true',
+            'enable_vlm_shelf:=true',
+            'enable_vlm_checkout:=true',
+            'competition_safe_mode:=true',
+            'enable_real_arm:=false',
+            'skip_arm_pick_place:=true',
+        ):
+            self.assertIn(required, competition_branch)
+
 
 if __name__ == '__main__':
     unittest.main()

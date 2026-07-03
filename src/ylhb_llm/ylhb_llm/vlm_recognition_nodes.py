@@ -37,12 +37,15 @@ class VlmRecognitionNode(Node):
         self.declare_parameter('vl_model', 'Qwen3-VL-235B-A22B-Thinking')
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('max_image_age_sec', 8.0)
+        self.declare_parameter('shelf_image_path', '')
+        self.declare_parameter('checkout_image_path', '')
 
         self.catalog = ProductCatalog.from_yaml(str(self.get_parameter('products_file').value))
         self.qwen = QwenClient(str(self.get_parameter('dashscope_base_url').value))
         self.vl_model = str(self.get_parameter('vl_model').value)
         self.request_timeout_sec = float(self.get_parameter('request_timeout_sec').value)
         self.max_image_age_sec = float(self.get_parameter('max_image_age_sec').value)
+        self.debug_image_path = self.selected_debug_image_path()
         self.latest_image: Image | None = None
         self.latest_image_at = 0.0
 
@@ -66,20 +69,18 @@ class VlmRecognitionNode(Node):
         payload = self.parse_request(msg.data)
         task_id = str(payload.get('task_id') or f'vlm_{int(time.time() * 1000)}')
         self.publish_status(task_id, self.recognition_stage, 'started', '')
-        if self.latest_image is None or time.monotonic() - self.latest_image_at > self.max_image_age_sec:
-            self.publish_status(task_id, self.recognition_stage, 'failed', '没有可用的 ZED 图像。')
-            return
         if not self.qwen.available():
             self.publish_status(task_id, self.recognition_stage, 'failed', 'DASHSCOPE_API_KEY 未配置。')
             return
+        remove_image = False
         try:
-            image_path = self.write_temp_image(self.latest_image)
+            image_path, remove_image = self.image_path_for_request()
             objects = self.recognize_image(image_path)
         except Exception as exc:
             self.publish_status(task_id, self.recognition_stage, 'failed', f'视觉大模型识别失败：{exc}')
             return
         finally:
-            if 'image_path' in locals():
+            if remove_image and 'image_path' in locals():
                 try:
                     os.unlink(image_path)
                 except OSError:
@@ -181,6 +182,17 @@ class VlmRecognitionNode(Node):
         msg.status = status
         msg.reason = reason
         self.status_pub.publish(msg)
+
+    def selected_debug_image_path(self) -> str:
+        name = 'checkout_image_path' if self.recognition_stage == 'checkout_inspect' else 'shelf_image_path'
+        return os.path.expanduser(str(self.get_parameter(name).value or ''))
+
+    def image_path_for_request(self) -> tuple[str, bool]:
+        if self.debug_image_path and os.path.isfile(self.debug_image_path):
+            return self.debug_image_path, False
+        if self.latest_image is None or time.monotonic() - self.latest_image_at > self.max_image_age_sec:
+            raise RuntimeError('没有可用的 ZED 图像。')
+        return self.write_temp_image(self.latest_image), True
 
 
 class VlmShelfRecognitionNode(VlmRecognitionNode):

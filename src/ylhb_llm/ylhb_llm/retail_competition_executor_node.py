@@ -67,10 +67,15 @@ class RetailCompetitionExecutorNode(Node):
             self.publish_status(msg.task_id, 'accept', 'rejected', '已有任务正在执行。')
             return
         intent = msg.intent
+        raw = self.raw_payload(msg)
         if intent == 'inspect_shelf_for_recommendation':
             self.start_workflow(msg, ['A'], inspect_shelf=True)
         elif intent == 'pick_item':
-            self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, arm=True)
+            flow = str(raw.get('flow') or '')
+            if msg.source == 'image' or flow == 'task_b_1':
+                self.start_workflow(msg, ['B'], arm=True)
+            else:
+                self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, arm=True)
         elif intent == 'checkout':
             self.start_workflow(msg, ['B'], inspect_checkout=True)
         elif intent == 'return_start':
@@ -107,19 +112,31 @@ class RetailCompetitionExecutorNode(Node):
                 if point == 'A' and inspect_shelf:
                     self.publish_vlm_request(self.vlm_shelf_pub, task_id, 'arrived_shelf')
                     time.sleep(self.stage_pause_sec)
-                    self.publish_status(task_id, 'shelf_recognition', 'succeeded', '')
+                    self.publish_status(task_id, 'shelf_recognition', 'request_sent', '')
                     if arm:
                         self.arm_stage(task_id, 'arm_pick')
                 if point == 'B' and inspect_checkout:
                     self.publish_vlm_request(self.vlm_checkout_pub, task_id, 'arrived_checkout')
                     time.sleep(self.stage_pause_sec)
-                    self.publish_status(task_id, 'checkout_inspect', 'succeeded', '')
+                    self.publish_status(task_id, 'checkout_inspect', 'request_sent', '')
                 if point == 'B' and arm:
                     self.arm_stage(task_id, 'arm_place')
-            final_stage = 'return_start' if points and points[-1] == 'S' else 'workflow'
+            if points and points[-1] == 'S':
+                final_stage = 'return_start'
+            elif arm:
+                final_stage = 'workflow_completed'
+            else:
+                final_stage = 'workflow'
             self.publish_status(task_id, final_stage, 'succeeded', '')
         finally:
             self.busy = False
+
+    def raw_payload(self, msg: TaskEvent) -> Dict[str, Any]:
+        try:
+            value = json.loads(msg.raw_json)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def navigate_to(self, point: str, task_id: str) -> bool:
         pose = self.pose_for(point)

@@ -105,6 +105,12 @@ case "${MODE}" in
       enable_task_layer:=true \
       enable_display_ui:=true \
       enable_system_supervisor:=true \
+      enable_competition_executor:=true \
+      enable_vlm_shelf:=true \
+      enable_vlm_checkout:=true \
+      competition_safe_mode:=true \
+      enable_real_arm:=false \
+      skip_arm_pick_place:=true \
       enable_voice:=true \
       enable_voice_session:=true \
       enable_capture_voice:=false \
@@ -113,6 +119,7 @@ case "${MODE}" in
       audio_output_device:=default \
       tts_voice:=Serena \
       display:="${DISPLAY}" \
+      route_file:="${WS_DIR}/maps/routes/retail_competition_route.json" \
       "$@"
     ;;
   competition_safe)
@@ -159,8 +166,8 @@ Modes:
   zed          Start ZED 2i wrapper
   perception   Start Jetson YOLO runtime with TensorRT engine
   llm          Start retail AI task layer, image service, and voice I/O nodes
-  competition  Start display UI and system supervisor for competition control
-  competition_safe  Start score-safe retail mode with executor, VLM, TTS, and arm skip
+  competition  Recommended score-safe retail mode with executor, VLM, TTS, and arm skip
+  competition_safe  Explicit alias for score-safe retail mode
   teleop       Start keyboard teleop
 
 Examples:

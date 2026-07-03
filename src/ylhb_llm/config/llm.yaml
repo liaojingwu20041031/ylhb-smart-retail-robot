@@ -162,6 +162,7 @@ vlm_shelf_recognition_node:
     vl_model: qwen3.6-plus
     request_timeout_sec: 12.0
     max_image_age_sec: 8.0
+    shelf_image_path: ""
 
 vlm_checkout_recognition_node:
   ros__parameters:
@@ -174,6 +175,7 @@ vlm_checkout_recognition_node:
     vl_model: qwen3.6-plus
     request_timeout_sec: 12.0
     max_image_age_sec: 8.0
+    checkout_image_path: ""
 
 system_supervisor_node:
   ros__parameters:

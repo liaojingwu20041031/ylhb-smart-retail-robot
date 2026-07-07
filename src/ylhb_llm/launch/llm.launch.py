@@ -57,13 +57,14 @@ def generate_launch_description():
     workspace_dir_arg = LaunchConfiguration('workspace_dir')
     map_output_dir = LaunchConfiguration('map_output_dir')
     perception_model_path = LaunchConfiguration('perception_model_path')
+    start_yolo_perception = LaunchConfiguration('start_yolo_perception')
 
     return LaunchDescription([
         DeclareLaunchArgument('params_file', default_value=default_params),
         DeclareLaunchArgument('products_file', default_value=default_products),
         DeclareLaunchArgument('dashscope_base_url', default_value='https://dashscope.aliyuncs.com/compatible-mode/v1'),
-        DeclareLaunchArgument('vl_model', default_value='qwen3.6-plus'),
-        DeclareLaunchArgument('chat_model', default_value='qwen3.6-plus'),
+        DeclareLaunchArgument('vl_model', default_value='qwen3.7-plus'),
+        DeclareLaunchArgument('chat_model', default_value='qwen3.7-plus'),
         DeclareLaunchArgument('asr_model', default_value='qwen3-asr-flash'),
         DeclareLaunchArgument('tts_model', default_value='qwen3-tts-flash'),
         DeclareLaunchArgument('audio_device', default_value='default'),
@@ -91,6 +92,7 @@ def generate_launch_description():
         DeclareLaunchArgument('workspace_dir', default_value=workspace_dir),
         DeclareLaunchArgument('map_output_dir', default_value=default_map_output_dir),
         DeclareLaunchArgument('perception_model_path', default_value=default_perception_model),
+        DeclareLaunchArgument('start_yolo_perception', default_value='false'),
         DeclareLaunchArgument('initial_system_mode', default_value='ready'),
         DeclareLaunchArgument('fullscreen', default_value='true'),
         DeclareLaunchArgument('display', default_value=':0'),
@@ -244,6 +246,7 @@ def generate_launch_description():
                     'workspace_dir': workspace_dir_arg,
                     'map_output_dir': map_output_dir,
                     'perception_model_path': perception_model_path,
+                    'start_yolo_perception': ParameterValue(start_yolo_perception, value_type=bool),
                     'embedded_task_layer': ParameterValue(enable_task_layer, value_type=bool),
                     'enable_voice': ParameterValue(enable_voice, value_type=bool),
                     'enable_voice_session': ParameterValue(enable_voice_session, value_type=bool),

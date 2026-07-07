@@ -50,6 +50,7 @@ class SystemSupervisorNode(Node):
         self.declare_parameter('map_output_dir', workspace_path('src', 'maps'))
         self.declare_parameter('default_navigation_map', workspace_path('maps', 'my_map.yaml'))
         self.declare_parameter('perception_model_path', workspace_path('src', 'ylhb_perception', 'models', 'yolo26.engine'))
+        self.declare_parameter('start_yolo_perception', False)
         self.declare_parameter('embedded_task_layer', True)
         self.declare_parameter('enable_voice', False)
         self.declare_parameter('enable_voice_session', False)
@@ -69,6 +70,7 @@ class SystemSupervisorNode(Node):
         self.map_output_dir = os.path.expanduser(str(self.get_parameter('map_output_dir').value))
         self.default_navigation_map = os.path.expanduser(str(self.get_parameter('default_navigation_map').value))
         self.perception_model_path = os.path.expanduser(str(self.get_parameter('perception_model_path').value))
+        self.start_yolo_perception = bool(self.get_parameter('start_yolo_perception').value)
         self.embedded_task_layer = bool(self.get_parameter('embedded_task_layer').value)
         self.enable_voice = bool(self.get_parameter('enable_voice').value)
         self.enable_voice_session = bool(self.get_parameter('enable_voice_session').value)
@@ -232,7 +234,10 @@ class SystemSupervisorNode(Node):
                 self.set_result_locked(f'stop_{name}', False, f'Failed to stop {name}: {exc}')
 
     def start_competition_stack(self) -> None:
-        for name in ('bringup', 'zed', 'perception', 'navigation', 'llm'):
+        names = ['bringup', 'zed', 'navigation', 'llm']
+        if self.start_yolo_perception:
+            names.insert(2, 'perception')
+        for name in names:
             self.start_process(name)
             time.sleep(0.3)
         self.set_result('start_competition_stack', True, '比赛节点启动命令已发送')

@@ -23,7 +23,8 @@
    已知地图 + AMCL 定位 + Nav2 规划控制 -> /cmd_vel -> 底盘运动
 
 4. AI 识别
-   ZED 2i 图像 -> YOLO26 -> 检测结果 / 本地窗口调试 / 深度定位
+   保分模式：ZED 2i 图像 -> VLM shelf/checkout 识别
+   增强模式：ZED 2i 图像 -> YOLO26 -> 检测结果 / 本地窗口调试 / 深度定位
 
 5. 比赛整合
    大模型任务层 -> 图片理解 / 语音文字指令解析 / 商品推荐 / 结算流程 -> 导航抓取任务事件
@@ -53,6 +54,15 @@
 接收结算指令 -> 导航到结算区 B -> 识别结算区内所有商品
 -> 播报商品清单 -> 返回起点 S -> 按 products.yaml 价格表计算并播报总价。
 ```
+
+当前比赛保分模式手动启动：
+
+```bash
+cd ~/ros2_ws
+./scripts/run_on_jetson.sh competition fullscreen:=true
+```
+
+该入口默认启用 VLM 货架/结算识别和 safe executor，机械臂真实接口默认跳过。比赛前必须按实际地图标定 S/A/B 点位，更新 `maps/routes/retail_competition_route.json` 或传入 `route_file:=实际路线文件`。仓库里的 A=(1,0)、B=(2,0) 只表示格式占位，不能作为现场路线。
 
 推荐启动顺序：
 
@@ -168,7 +178,7 @@ source install/setup.bash
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i
 ```
 
-> **🧠 核心指令：启动 YOLO26 实时感知分析**
+> **🧠 增强模式：启动 YOLO26 实时感知分析**
 
 ```bash
 # 终端 3：启动 YOLO26 实时识别
@@ -202,7 +212,7 @@ ros2 launch ylhb_perception perception.launch.py \
   log_interval_sec:=2.0 \
   device:=cuda:0
 
-# 比赛模式：关闭所有可视化输出，只发布检测 JSON 和 3D 定位结果
+# 增强模式：关闭所有可视化输出，只发布检测 JSON 和 3D 定位结果
 ros2 launch ylhb_perception perception.launch.py \
   model_path:=/home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine \
   backend:=tensorrt \
@@ -411,11 +421,11 @@ UI 顶部状态栏会显示 `B1服务: 就绪/未就绪`。刚启动比赛总控
 ./scripts/run_on_jetson.sh competition fullscreen:=false
 ```
 
-### 任务 C 后台手动播报
+### TTS 音频链路调试
 
-比赛现场需要手动触发两段任务 C 展示语音时，直接向统一播报话题
+需要单独验证播报链路时，直接向统一播报话题
 `/retail_ai/say_text` 发布消息。这两条命令只依赖 `voice_output_node` 和 TTS，
-不依赖 `retail_task_node`、任务 C 状态机、导航、视觉识别或 service。
+不依赖 `retail_task_node`、任务 C 状态机、导航、视觉识别或 service，不能作为正式任务 C 流程。
 
 默认展示商品固定为：
 
@@ -483,7 +493,7 @@ UI 的“系统控制”页通过 `/retail_ai/system_command` 向 `system_superv
 返回准备状态
 ```
 
-“一键启动比赛节点”会按 `bringup -> zed -> perception -> navigation -> llm` 顺序启动比赛栈。`competition` 启动时 AI 任务层已经内嵌运行，因此 supervisor 会把 `llm` 状态显示为 `embedded`，不会重复启动同名 AI 节点。“一键停止比赛节点”会停止导航、感知、ZED 和底盘/雷达，保留 UI、AI 任务层和语音节点继续运行。
+“一键启动比赛节点”在保分模式下按 `bringup -> zed -> navigation -> llm` 顺序启动比赛栈，不强制启动 YOLO/TensorRT 感知。需要增强模式时使用 `start_yolo_perception:=true` 或手动 `start_perception`。`competition` 启动时 AI 任务层已经内嵌运行，因此 supervisor 会把 `llm` 状态显示为 `embedded`，不会重复启动同名 AI 节点。“一键停止比赛节点”会停止导航、感知、ZED 和底盘/雷达，保留 UI、AI 任务层和语音节点继续运行。
 
 supervisor 支持的命令：
 
@@ -2329,8 +2339,8 @@ export DASHSCOPE_API_KEY=你的DashScope_API_Key
 默认模型参数在 `src/ylhb_llm/config/llm.yaml`：
 
 ```text
-vl_model: qwen3.6-plus
-chat_model: qwen3.6-plus
+vl_model: qwen3.7-plus
+chat_model: qwen3.7-plus
 asr_model: qwen3-asr-flash
 tts_model: qwen3-tts-flash
 dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -2338,14 +2348,14 @@ vision_timeout_sec: 45.0
 request_timeout_sec: 12.0
 ```
 
-视觉和文字结构化解析请求会显式使用 `enable_thinking=false`。这样保留 `qwen3.6-plus` 的图像理解能力，同时避免思考模式拖慢响应，适合比赛现场 60 秒响应限制。
+视觉和文字结构化解析统一使用 `qwen3.7-plus` 多模态大模型。视觉请求必须支持 `image_url`；请求会显式使用 `enable_thinking=false`，避免思考模式拖慢响应，适合比赛现场 60 秒响应限制。
 
 如果实际 DashScope 控制台里的模型 ID 不同，启动时直接覆盖：
 
 ```bash
 ros2 launch ylhb_llm llm.launch.py \
-  vl_model:=qwen3.6-plus \
-  chat_model:=qwen3.6-plus \
+  vl_model:=qwen3.7-plus \
+  chat_model:=qwen3.7-plus \
   enable_voice:=false \
   enable_tts:=false
 ```
@@ -2364,7 +2374,7 @@ ros2 launch ylhb_llm llm.launch.py \
 |---|---|---|---|
 | `products_file` | `.../products.yaml` | 商品库路径，维护商品 ID、名称、别名、价格、推荐权重 | 现场商品名称或价格变化时优先改这里 |
 | `text_command_topic` | `/retail_ai/text_command` | 文字任务输入话题，也接收 ASR 后文字 | 一般不改 |
-| `localized_objects_topic` | `/perception/localized_objects` | YOLO+深度定位后的真实货架商品结果 | 必须和感知节点输出一致 |
+| `localized_objects_topic` | `/perception/localized_objects` | VLM 保分模式或 YOLO+深度定位增强模式后的商品结果 | 必须和识别节点输出一致 |
 | `task_event_topic` | `/retail_ai/task_event` | AI 层发给导航/抓取层的任务事件 | 导航/抓取层订阅这个 |
 | `task_status_topic` | `/retail_ai/task_status` | 导航/抓取层回传执行状态 | 成功后才会加入购物车 |
 | `say_text_topic` | `/retail_ai/say_text` | 所有播报文本输出 | 可用 `ros2 topic echo` 调试 |
@@ -2374,8 +2384,8 @@ ros2 launch ylhb_llm llm.launch.py \
 | `system_mode_topic` | `/retail_ai/system_mode` | 显示屏全局模式控制 | sleep/fault 下不启动普通任务 |
 | `shelf_snapshot_ttl_sec` | `2.0` | 货架识别结果有效期，超过则不推荐 | 货架识别频率低时可调到 3~5 |
 | `dashscope_base_url` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | DashScope 北京地域 OpenAI 兼容地址 | 国际地域改 `dashscope-intl` |
-| `vl_model` | `qwen3.6-plus` | 图片理解模型 | 最高效果用 `qwen3.6-plus`，更快更省用 `qwen3.6-flash` |
-| `chat_model` | `qwen3.6-plus` | 文字意图解析模型 | 最高效果用 `qwen3.6-plus` |
+| `vl_model` | `qwen3.7-plus` | 图片理解模型 | 必须支持 `image_url` |
+| `chat_model` | `qwen3.7-plus` | 文字意图解析模型 | 与视觉统一使用 qwen3.7-plus |
 | `request_timeout_sec` | `12.0` | 普通文本请求超时 | 文字解析慢时调大；比赛不建议超过 20 |
 | `vision_timeout_sec` | `45.0` | 图片理解请求超时 | 仍超时时可临时调到 60 |
 | `publish_raw_json` | `true` | 是否保留调试 JSON | 比赛稳定后可设 false 减少消息长度 |
@@ -2463,8 +2473,8 @@ ros2 launch ylhb_llm llm.launch.py \
 
 # 最高效果但开启真实播报
 ros2 launch ylhb_llm llm.launch.py \
-  vl_model:=qwen3.6-plus \
-  chat_model:=qwen3.6-plus \
+  vl_model:=qwen3.7-plus \
+  chat_model:=qwen3.7-plus \
   enable_voice:=true \
   enable_tts:=true \
   audio_input_device:=plughw:CARD=Luna,DEV=0 \

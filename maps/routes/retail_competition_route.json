@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "_note": "占位坐标，现场建图后替换。start_pose 表示 S，targets 包含 A/B。",
+  "_note": "占位坐标，仅表示格式。比赛前必须根据实际地图标定 S/A/B 点位后替换，或启动时用 route_file:= 指向实测路线文件。",
   "start_pose": {
     "frame_id": "map",
     "x": 0.0,

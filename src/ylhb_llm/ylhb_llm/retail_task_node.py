@@ -82,8 +82,8 @@ class RetailTaskNode(Node):
         self.declare_parameter('vlm_shelf_request_topic', '/retail_ai/vlm_shelf_request')
         self.declare_parameter('vlm_checkout_request_topic', '/retail_ai/vlm_checkout_request')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        self.declare_parameter('vl_model', 'Qwen3-VL-235B-A22B-Thinking')
-        self.declare_parameter('chat_model', 'qwen-max')
+        self.declare_parameter('vl_model', 'qwen3.7-plus')
+        self.declare_parameter('chat_model', 'qwen3.7-plus')
         self.declare_parameter('request_timeout_sec', 5.0)
         self.declare_parameter('vision_timeout_sec', 10.0)
         self.declare_parameter('publish_raw_json', True)
@@ -2029,8 +2029,12 @@ class RetailTaskNode(Node):
     def checkout_items_from_latest_detection(self, task_id: str = '') -> Dict[str, Dict[str, Any]]:
         products_by_task = getattr(self, 'checkout_products_by_task', {})
         updated_by_task = getattr(self, 'checkout_updated_at_by_task', {})
-        products = products_by_task.get(task_id, self.latest_detected_products)
-        updated_at = updated_by_task.get(task_id, self.latest_detected_updated_at)
+        if task_id:
+            products = products_by_task.get(task_id, [])
+            updated_at = updated_by_task.get(task_id, 0.0)
+        else:
+            products = self.latest_detected_products
+            updated_at = self.latest_detected_updated_at
         if time.monotonic() - updated_at > self.shelf_snapshot_ttl_sec:
             return {}
         items: Dict[str, Dict[str, Any]] = {}
@@ -2053,8 +2057,12 @@ class RetailTaskNode(Node):
     def shelf_products_for_task(self, task_id: str = '') -> List[Tuple[Product, Dict[str, Any]]]:
         products_by_task = getattr(self, 'shelf_products_by_task', {})
         updated_by_task = getattr(self, 'shelf_updated_at_by_task', {})
-        products = products_by_task.get(task_id, self.shelf_products)
-        updated_at = updated_by_task.get(task_id, self.shelf_updated_at)
+        if task_id:
+            products = products_by_task.get(task_id, [])
+            updated_at = updated_by_task.get(task_id, 0.0)
+        else:
+            products = self.shelf_products
+            updated_at = self.shelf_updated_at
         if time.monotonic() - updated_at > self.shelf_snapshot_ttl_sec:
             return []
         return products

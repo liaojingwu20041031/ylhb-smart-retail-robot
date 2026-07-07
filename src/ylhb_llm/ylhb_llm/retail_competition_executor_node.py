@@ -35,6 +35,7 @@ class RetailCompetitionExecutorNode(Node):
         self.declare_parameter('skip_arm_pick_place', True)
         self.declare_parameter('navigation_timeout_sec', 90.0)
         self.declare_parameter('stage_pause_sec', 0.8)
+        self.declare_parameter('vlm_timeout_sec', 45.0)
 
         self.route_file = str(self.get_parameter('route_file').value)
         self.safe_mode = bool(self.get_parameter('competition_safe_mode').value)
@@ -42,8 +43,13 @@ class RetailCompetitionExecutorNode(Node):
         self.skip_arm_pick_place = bool(self.get_parameter('skip_arm_pick_place').value)
         self.navigation_timeout_sec = float(self.get_parameter('navigation_timeout_sec').value)
         self.stage_pause_sec = float(self.get_parameter('stage_pause_sec').value)
+        self.vlm_timeout_sec = float(self.get_parameter('vlm_timeout_sec').value)
         self.route = self.load_route(self.route_file)
+        self.warn_if_placeholder_route(self.route)
         self.busy = False
+        self.busy_lock = threading.Lock()
+        self.vlm_condition = threading.Condition()
+        self.vlm_results: Dict[tuple[str, str], str] = {}
 
         self.status_pub = self.create_publisher(
             TaskStatus, str(self.get_parameter('task_status_topic').value), 10)
@@ -55,6 +61,8 @@ class RetailCompetitionExecutorNode(Node):
             String, str(self.get_parameter('vlm_checkout_request_topic').value), 10)
         self.create_subscription(
             TaskEvent, str(self.get_parameter('task_event_topic').value), self.task_event_callback, 10)
+        self.create_subscription(
+            TaskStatus, str(self.get_parameter('task_status_topic').value), self.task_status_callback, 10)
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.get_logger().info(f'Retail competition executor started. route_file={self.route_file}')
 
@@ -63,27 +71,42 @@ class RetailCompetitionExecutorNode(Node):
             return json.load(handle)
 
     def task_event_callback(self, msg: TaskEvent) -> None:
-        if self.busy and msg.intent not in ('return_start',):
-            self.publish_status(msg.task_id, 'accept', 'rejected', '已有任务正在执行。')
-            return
         intent = msg.intent
         raw = self.raw_payload(msg)
+        started = False
         if intent == 'inspect_shelf_for_recommendation':
-            self.start_workflow(msg, ['A'], inspect_shelf=True)
+            started = self.start_workflow(msg, ['A'], inspect_shelf=True)
         elif intent == 'pick_item':
             flow = str(raw.get('flow') or '')
             if msg.source == 'image' or flow == 'task_b_1':
-                self.start_workflow(msg, ['B'], arm=True)
+                started = self.start_workflow(msg, ['B'], arm=True, arm_pick_before_first_nav=True)
             else:
-                self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, arm=True)
+                started = self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, arm=True)
         elif intent == 'checkout':
-            self.start_workflow(msg, ['B'], inspect_checkout=True)
+            started = self.start_workflow(msg, ['B'], inspect_checkout=True)
         elif intent == 'return_start':
-            self.start_workflow(msg, ['S'])
+            started = self.start_workflow(msg, ['S'], wait_if_busy=True)
         elif intent == 'retail_demo':
-            self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, inspect_checkout=True)
+            started = self.start_workflow(msg, ['A', 'B', 'S'], inspect_shelf=True, inspect_checkout=True)
+        if intent and not started:
+            self.publish_status(msg.task_id, 'accept', 'rejected', '已有任务正在执行。')
 
-    def start_workflow(self, event: TaskEvent, points: List[str], **kwargs: Any) -> None:
+    def start_workflow(
+        self,
+        event: TaskEvent,
+        points: List[str],
+        wait_if_busy: bool = False,
+        **kwargs: Any,
+    ) -> bool:
+        deadline = time.monotonic() + 3.0
+        while True:
+            with self.busy_lock:
+                if not self.busy:
+                    self.busy = True
+                    break
+            if not wait_if_busy or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
         thread = threading.Thread(
             target=self.run_workflow,
             args=(event, points),
@@ -91,6 +114,7 @@ class RetailCompetitionExecutorNode(Node):
             daemon=True,
         )
         thread.start()
+        return True
 
     def run_workflow(
         self,
@@ -99,26 +123,32 @@ class RetailCompetitionExecutorNode(Node):
         inspect_shelf: bool = False,
         inspect_checkout: bool = False,
         arm: bool = False,
+        arm_pick_before_first_nav: bool = False,
     ) -> None:
-        self.busy = True
         task_id = event.task_id
         self.publish_status(task_id, 'workflow', 'started', '')
         try:
+            if arm and arm_pick_before_first_nav:
+                self.arm_stage(task_id, 'arm_pick')
             for point in points:
                 if not self.navigate_to(point, task_id):
                     self.say(task_id, '导航失败，请检查定位或路线', priority=9)
                     self.publish_status(task_id, 'navigation', 'failed', '导航失败，请检查定位或路线')
                     return
                 if point == 'A' and inspect_shelf:
+                    self.clear_vlm_status(task_id, 'shelf_recognition')
                     self.publish_vlm_request(self.vlm_shelf_pub, task_id, 'arrived_shelf')
-                    time.sleep(self.stage_pause_sec)
                     self.publish_status(task_id, 'shelf_recognition', 'request_sent', '')
-                    if arm:
+                    if not self.wait_for_vlm_status(task_id, 'shelf_recognition'):
+                        return
+                    if arm and not arm_pick_before_first_nav:
                         self.arm_stage(task_id, 'arm_pick')
                 if point == 'B' and inspect_checkout:
+                    self.clear_vlm_status(task_id, 'checkout_inspect')
                     self.publish_vlm_request(self.vlm_checkout_pub, task_id, 'arrived_checkout')
-                    time.sleep(self.stage_pause_sec)
                     self.publish_status(task_id, 'checkout_inspect', 'request_sent', '')
+                    if not self.wait_for_vlm_status(task_id, 'checkout_inspect'):
+                        return
                 if point == 'B' and arm:
                     self.arm_stage(task_id, 'arm_place')
             if points and points[-1] == 'S':
@@ -129,7 +159,8 @@ class RetailCompetitionExecutorNode(Node):
                 final_stage = 'workflow'
             self.publish_status(task_id, final_stage, 'succeeded', '')
         finally:
-            self.busy = False
+            with self.busy_lock:
+                self.busy = False
 
     def raw_payload(self, msg: TaskEvent) -> Dict[str, Any]:
         try:
@@ -137,6 +168,58 @@ class RetailCompetitionExecutorNode(Node):
         except json.JSONDecodeError:
             return {}
         return value if isinstance(value, dict) else {}
+
+    def task_status_callback(self, msg: TaskStatus) -> None:
+        if msg.stage not in ('shelf_recognition', 'checkout_inspect'):
+            return
+        if msg.status not in ('succeeded', 'failed'):
+            return
+        with self.vlm_condition:
+            self.vlm_results[(msg.task_id, msg.stage)] = msg.status
+            self.vlm_condition.notify_all()
+
+    def wait_for_vlm_status(self, task_id: str, stage: str) -> bool:
+        deadline = time.monotonic() + self.vlm_timeout_sec
+        key = (task_id, stage)
+        with self.vlm_condition:
+            while rclpy.ok():
+                status = self.vlm_results.get(key)
+                if status == 'succeeded':
+                    return True
+                if status == 'failed':
+                    self.publish_status(task_id, stage, 'failed', 'VLM recognition failed')
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    self.publish_status(task_id, stage, 'failed', 'VLM recognition timeout')
+                    return False
+                self.vlm_condition.wait(timeout=min(0.2, remaining))
+
+    def clear_vlm_status(self, task_id: str, stage: str) -> None:
+        with self.vlm_condition:
+            self.vlm_results.pop((task_id, stage), None)
+
+    @staticmethod
+    def is_placeholder_route(route: Dict[str, Any]) -> bool:
+        targets = route.get('targets', {})
+        start = route.get('start_pose', {})
+        a = targets.get('A', {})
+        b = targets.get('B', {})
+        return (
+            float(start.get('x', 999.0)) == 0.0
+            and float(start.get('y', 999.0)) == 0.0
+            and float(a.get('x', 999.0)) == 1.0
+            and float(a.get('y', 999.0)) == 0.0
+            and float(b.get('x', 999.0)) == 2.0
+            and float(b.get('y', 999.0)) == 0.0
+        )
+
+    def warn_if_placeholder_route(self, route: Dict[str, Any]) -> None:
+        if self.is_placeholder_route(route):
+            self.get_logger().warn(
+                '!!! retail_competition_route.json still uses placeholder S/A/B coordinates. '
+                'Calibrate S/A/B from the actual map before competition. !!!'
+            )
 
     def navigate_to(self, point: str, task_id: str) -> bool:
         pose = self.pose_for(point)

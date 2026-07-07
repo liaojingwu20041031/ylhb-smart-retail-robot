@@ -34,7 +34,7 @@ class VlmRecognitionNode(Node):
         self.declare_parameter('localized_objects_topic', '/perception/localized_objects')
         self.declare_parameter('task_status_topic', '/retail_ai/task_status')
         self.declare_parameter('dashscope_base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        self.declare_parameter('vl_model', 'Qwen3-VL-235B-A22B-Thinking')
+        self.declare_parameter('vl_model', 'qwen3.7-plus')
         self.declare_parameter('request_timeout_sec', 12.0)
         self.declare_parameter('max_image_age_sec', 8.0)
         self.declare_parameter('shelf_image_path', '')

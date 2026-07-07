@@ -49,13 +49,11 @@ retail_task_node:
     # 如果使用国际/新加坡地域，需要换成 https://dashscope-intl.aliyuncs.com/compatible-mode/v1
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 
-    # 视觉理解模型。比赛追求效果优先，默认使用 qwen3.6-plus。
-    # 如果现场网络慢或想降成本，可临时改 qwen3.6-flash。
-    vl_model: qwen3.6-plus
+    # 视觉理解模型。必须使用支持 image_url 的 VL 模型。
+    vl_model: qwen3.7-plus
 
     # 文本意图解析模型。用于复杂口语、多轮补充、商品名称归一化。
-    # 为了效果稳定，默认也使用 qwen3.6-plus。
-    chat_model: qwen3.6-plus
+    chat_model: qwen3.7-plus
 
     # B-2 语音实时分类模型：只做意图/类别/约束分类，最终选品和执行仍由本地状态机决定。
     fast_classifier_model: qwen3.6-flash
@@ -73,7 +71,7 @@ retail_task_node:
     # 太短容易误判超时；太长会影响比赛 60 秒响应限制。
     request_timeout_sec: 12.0
 
-    # 图片理解请求超时，单位秒。qwen3.6-plus 第一次视觉请求可能较慢，所以默认 45 秒。
+    # 图片理解请求超时，单位秒。VL 模型第一次视觉请求可能较慢，所以默认 45 秒。
     # 如果比赛现场网络稳定，可调到 20~30；如果仍超时，可临时调到 60。
     vision_timeout_sec: 45.0
 
@@ -159,7 +157,7 @@ vlm_shelf_recognition_node:
     localized_objects_topic: /perception/localized_objects
     task_status_topic: /retail_ai/task_status
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    vl_model: qwen3.6-plus
+    vl_model: qwen3.7-plus
     request_timeout_sec: 12.0
     max_image_age_sec: 8.0
     shelf_image_path: ""
@@ -172,7 +170,7 @@ vlm_checkout_recognition_node:
     localized_objects_topic: /perception/localized_objects
     task_status_topic: /retail_ai/task_status
     dashscope_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    vl_model: qwen3.6-plus
+    vl_model: qwen3.7-plus
     request_timeout_sec: 12.0
     max_image_age_sec: 8.0
     checkout_image_path: ""
@@ -188,6 +186,7 @@ system_supervisor_node:
     map_output_dir: /home/nvidia/ros2_ws/src/maps
     default_navigation_map: /home/nvidia/ros2_ws/maps/my_map.yaml
     perception_model_path: /home/nvidia/ros2_ws/src/ylhb_perception/models/yolo26.engine
+    start_yolo_perception: false
     embedded_task_layer: true
     enable_voice: false
     enable_voice_session: false

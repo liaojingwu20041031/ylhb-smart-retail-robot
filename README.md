@@ -282,13 +282,36 @@ teleop        启动键盘遥控
 ./scripts/run_on_jetson.sh competition
 ```
 
-`competition` 默认启动显示屏 UI、系统 supervisor、AI 任务层、连续语音会话和 TTS 播报。进入 UI 的“系统控制”页后，点击“一键启动比赛节点”，supervisor 会按：
+`competition` 默认启动显示屏 UI、系统 supervisor、AI 任务层、VLM shelf/checkout 节点、连续语音会话和 TTS 播报。进入 UI 的“系统控制”页后，点击“一键启动比赛节点”，supervisor 会按保分模式启动底层栈：
 
 ```text
-bringup -> zed -> perception -> navigation -> llm
+bringup -> zed -> navigation -> llm
 ```
 
 顺序启动比赛栈。其中 AI 任务层已随 `competition` 内嵌运行，状态会显示为 `embedded`，不会重复启动。
+
+### 当前比赛保分模式
+
+当前 `competition` 入口等价于 score-safe 栈：
+
+- 默认启用 `retail_competition_executor_node`、`vlm_shelf_recognition_node` 和 `vlm_checkout_recognition_node`。
+- 机械臂接口预留，默认 `competition_safe_mode:=true enable_real_arm:=false skip_arm_pick_place:=true`，只发布抓取/放置 skipped 成功状态。
+- B-1/B-2/C 的商品识别由 ZED 当前图像进入 VLM 完成；YOLO/TensorRT 是增强模式，不是当前保分模式硬依赖。
+- 比赛前必须按实际地图标定 S/A/B 点位，更新 `maps/routes/retail_competition_route.json` 或通过 `route_file:=...` 指向实测路线文件。仓库中的占位路线只用于格式示例，不能直接上场。
+
+调试图片兜底：
+
+```bash
+./scripts/run_on_jetson.sh competition \
+  shelf_image_path:=/home/nvidia/ros2_ws/src/ylhb_llm/test_images/shelf.jpg \
+  checkout_image_path:=/home/nvidia/ros2_ws/src/ylhb_llm/test_images/checkout.jpg
+```
+
+启用 YOLO/TensorRT 增强感知时，再显式启动：
+
+```bash
+./scripts/run_on_jetson.sh competition start_yolo_perception:=true
+```
 
 默认参数：
 
@@ -526,6 +549,8 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard \
 ```
 
 推荐比赛导航地图来自实机 SLAM 保存，地图图像为 `195 x 333`，分辨率 `0.05 m/pix`。`~/ros2_ws/src/my_map.yaml` 仅作为兼容回退地图。
+
+巡检路线标注工具的小车俯视模型参考 `/home/nvidia/ros2_DL/src/ylhb_base/config/nav2_params.yaml` 中的 Nav2 `footprint` 和 `footprint_padding`，导出前按整车占地检查地图空闲区。
 
 UI 的“保存地图”默认写入：
 

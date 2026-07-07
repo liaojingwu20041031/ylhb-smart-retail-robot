@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from ylhb_llm.product_catalog import ProductCatalog
 from ylhb_llm.retail_competition_executor_node import RetailCompetitionExecutorNode
 from ylhb_llm.retail_task_node import RetailTaskNode
+from ylhb_llm.system_supervisor_node import SystemSupervisorNode
 from ylhb_llm.vlm_recognition_nodes import VlmRecognitionNode, VlmShelfRecognitionNode
 
 
@@ -70,6 +71,24 @@ class CompetitionSafeModeTest(unittest.TestCase):
         items = node.checkout_items_from_latest_detection()
 
         self.assertEqual(items['cola_coca']['quantity'], 3)
+
+    def test_task_id_checkout_does_not_fallback_to_latest_detection(self):
+        node = self.make_task_node()
+        node.latest_detected_updated_at = time.monotonic()
+        node.latest_detected_products = [
+            (self.catalog.get('cola_coca'), {'quantity': 2}),
+        ]
+
+        self.assertEqual(node.checkout_items_from_latest_detection('missing_task'), {})
+
+    def test_task_id_shelf_does_not_fallback_to_global_shelf(self):
+        node = self.make_task_node()
+        node.shelf_updated_at = time.monotonic()
+        node.shelf_products = [
+            (self.catalog.get('cola_coca'), {'quantity': 1}),
+        ]
+
+        self.assertEqual(node.shelf_products_for_task('missing_task'), [])
 
     def test_b1_recommendation_waits_for_shelf_recognition_success(self):
         node = self.make_task_node()
@@ -140,7 +159,7 @@ class CompetitionSafeModeTest(unittest.TestCase):
         node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
         node.busy = False
         calls = []
-        node.start_workflow = lambda msg, points, **kwargs: calls.append((points, kwargs))
+        node.start_workflow = lambda msg, points, **kwargs: calls.append((points, kwargs)) or True
         event = SimpleNamespace(
             task_id='b1',
             intent='pick_item',
@@ -152,12 +171,13 @@ class CompetitionSafeModeTest(unittest.TestCase):
 
         self.assertEqual(calls[0][0], ['B'])
         self.assertTrue(calls[0][1]['arm'])
+        self.assertTrue(calls[0][1]['arm_pick_before_first_nav'])
 
     def test_executor_routes_b2_pick_through_a_b_s(self):
         node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
         node.busy = False
         calls = []
-        node.start_workflow = lambda msg, points, **kwargs: calls.append((points, kwargs))
+        node.start_workflow = lambda msg, points, **kwargs: calls.append((points, kwargs)) or True
         event = SimpleNamespace(
             task_id='b2',
             intent='pick_item',
@@ -173,18 +193,92 @@ class CompetitionSafeModeTest(unittest.TestCase):
     def test_executor_does_not_fake_vlm_success(self):
         node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
         node.busy = False
+        node.busy_lock = __import__('threading').Lock()
         node.stage_pause_sec = 0.0
         node.navigate_to = lambda point, task_id: True
         node.vlm_shelf_pub = object()
+        node.vlm_condition = __import__('threading').Condition()
+        node.vlm_results = {}
         statuses = []
         node.publish_status = lambda task_id, stage, status, reason: statuses.append((stage, status))
         node.publish_vlm_request = lambda *args: None
+        node.wait_for_vlm_status = lambda task_id, stage: True
         node.arm_stage = lambda task_id, stage: statuses.append((stage, 'succeeded'))
 
         node.run_workflow(SimpleNamespace(task_id='b2'), ['A', 'B', 'S'], inspect_shelf=True, arm=True)
 
         self.assertIn(('shelf_recognition', 'request_sent'), statuses)
         self.assertNotIn(('shelf_recognition', 'succeeded'), statuses)
+
+    def test_executor_waits_for_shelf_vlm_before_arm_pick(self):
+        node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
+        node.busy = False
+        node.busy_lock = __import__('threading').Lock()
+        node.stage_pause_sec = 0.0
+        node.vlm_shelf_pub = object()
+        node.vlm_condition = __import__('threading').Condition()
+        node.vlm_results = {}
+        node.navigate_to = lambda point, task_id: True
+        calls = []
+        node.publish_status = lambda task_id, stage, status, reason: calls.append(('status', stage, status))
+        node.publish_vlm_request = lambda *args: calls.append(('vlm_request',))
+        node.wait_for_vlm_status = lambda task_id, stage: calls.append(('wait', stage)) or True
+        node.arm_stage = lambda task_id, stage: calls.append(('arm', stage))
+
+        node.run_workflow(SimpleNamespace(task_id='b2'), ['A'], inspect_shelf=True, arm=True)
+
+        self.assertLess(calls.index(('wait', 'shelf_recognition')), calls.index(('arm', 'arm_pick')))
+
+    def test_executor_waits_for_checkout_vlm_before_finishing_checkout(self):
+        node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
+        node.busy = False
+        node.busy_lock = __import__('threading').Lock()
+        node.stage_pause_sec = 0.0
+        node.vlm_checkout_pub = object()
+        node.vlm_condition = __import__('threading').Condition()
+        node.vlm_results = {}
+        node.navigate_to = lambda point, task_id: True
+        calls = []
+        node.publish_status = lambda task_id, stage, status, reason: calls.append(('status', stage, status))
+        node.publish_vlm_request = lambda *args: calls.append(('vlm_request',))
+        node.wait_for_vlm_status = lambda task_id, stage: calls.append(('wait', stage)) or True
+        node.arm_stage = lambda task_id, stage: calls.append(('arm', stage))
+
+        node.run_workflow(SimpleNamespace(task_id='c'), ['B'], inspect_checkout=True)
+
+        self.assertIn(('wait', 'checkout_inspect'), calls)
+
+    def test_executor_start_workflow_sets_busy_before_thread_starts(self):
+        node = RetailCompetitionExecutorNode.__new__(RetailCompetitionExecutorNode)
+        node.busy = False
+        node.busy_lock = __import__('threading').Lock()
+        node.publish_status = lambda *args, **kwargs: None
+        node.run_workflow = lambda *args, **kwargs: time.sleep(0.1)
+
+        self.assertTrue(node.start_workflow(SimpleNamespace(task_id='t'), []))
+        self.assertTrue(node.busy)
+
+    def test_placeholder_route_is_detected(self):
+        route = {
+            'start_pose': {'x': 0.0, 'y': 0.0, 'yaw': 0.0},
+            'targets': {
+                'A': {'x': 1.0, 'y': 0.0, 'yaw': 0.0},
+                'B': {'x': 2.0, 'y': 0.0, 'yaw': 0.0},
+            },
+        }
+
+        self.assertTrue(RetailCompetitionExecutorNode.is_placeholder_route(route))
+
+    def test_supervisor_safe_mode_skips_yolo_perception_by_default(self):
+        node = SystemSupervisorNode.__new__(SystemSupervisorNode)
+        node.start_yolo_perception = False
+        started = []
+        node.start_process = lambda name: started.append(name)
+        node.set_result = lambda *args, **kwargs: None
+
+        node.start_competition_stack()
+
+        self.assertNotIn('perception', started)
 
     def test_vlm_debug_image_path_is_used_without_delete(self):
         node = VlmRecognitionNode.__new__(VlmRecognitionNode)
